@@ -58,6 +58,10 @@ const EFFICIENCY_FLOOR: f64 = 0.85;
 /// 1. Error rate crosses [`ERROR_THRESHOLD`]
 /// 2. p99 ≥ 3× early baseline **and** ≥ baseline + 20ms **and**
 ///    (sustained across two windows, **or** throughput efficiency collapsed)
+///
+/// A knee is a hand-off from working to broken, so the reported load always
+/// comes from a window that actually worked. A run with no healthy window —
+/// an unreachable host, a wrong port, a rejected auth header — has no knee.
 pub fn detect(series: &[WindowMetric]) -> Option<Knee> {
     if series.len() < MIN_WINDOWS {
         return None;
@@ -74,8 +78,14 @@ pub fn detect(series: &[WindowMetric]) -> Option<Knee> {
         let prev = &series[i - 1];
 
         if w.error_rate >= ERROR_THRESHOLD {
+            // No healthy window yet means nothing has broken: the target was
+            // failing before load ever mattered. Keep scanning in case it
+            // recovers and later breaks for real.
+            let Some(safe) = last_healthy_before(series, i) else {
+                continue;
+            };
             return Some(knee_at(
-                prev,
+                safe,
                 format!(
                     "error rate {:.1}% ≥ {:.0}%",
                     w.error_rate * 100.0,
@@ -123,7 +133,10 @@ pub fn detect(series: &[WindowMetric]) -> Option<Knee> {
                 w.p99_ms / baseline
             )
         };
-        return Some(knee_at(prev, reason));
+        let Some(safe) = last_healthy_before(series, i) else {
+            continue;
+        };
+        return Some(knee_at(safe, reason));
     }
 
     None
@@ -131,6 +144,15 @@ pub fn detect(series: &[WindowMetric]) -> Option<Knee> {
 
 fn is_latency_break(p99_ms: f64, baseline: f64) -> bool {
     p99_ms >= baseline * LATENCY_MULTIPLIER && p99_ms >= baseline + MIN_ABS_P99_RISE_MS
+}
+
+/// Last window before `i` that was still serving: errors below the break
+/// threshold. Returns `None` when the run never had a working window.
+fn last_healthy_before(series: &[WindowMetric], i: usize) -> Option<&WindowMetric> {
+    series[..i]
+        .iter()
+        .rev()
+        .find(|w| w.error_rate < ERROR_THRESHOLD)
 }
 
 fn knee_at(safe: &WindowMetric, reason: String) -> Knee {
@@ -251,6 +273,61 @@ mod tests {
             .collect();
         series[8] = w(8.0, 100.0, 99.0, 2.0, 80.0, 0.0); // lone spike
         assert!(detect(&series).is_none());
+    }
+
+    /// Pointing gust at a closed port used to report the send rate as the
+    /// system's capacity, complete with a "safe operating load" derived from a
+    /// server that never answered.
+    #[test]
+    fn all_requests_failing_is_not_a_knee() {
+        let series: Vec<WindowMetric> = (0..50)
+            .map(|i| w(i as f64 * 0.1, 300.0, 300.0, 0.06, 0.19, 1.0))
+            .collect();
+        assert!(
+            detect(&series).is_none(),
+            "a target that never responded has no measurable capacity"
+        );
+    }
+
+    /// A target that is broken from the start and then recovers must not have
+    /// the dead stretch reported as its capacity.
+    #[test]
+    fn knee_ignores_a_dead_start_and_measures_the_real_break() {
+        let mut series: Vec<WindowMetric> = Vec::new();
+        // First 12 windows: nothing is listening yet.
+        for i in 0..12 {
+            series.push(w(i as f64 * 0.1, 100.0, 0.0, 0.05, 0.1, 1.0));
+        }
+        // Then it serves cleanly while load climbs.
+        for i in 12..30 {
+            let target = 100.0 + (i - 12) as f64 * 20.0;
+            series.push(w(i as f64 * 0.1, target, target, 2.0, 5.0, 0.0));
+        }
+        // Then it genuinely breaks.
+        for i in 30..34 {
+            let target = 100.0 + (i - 12) as f64 * 20.0;
+            series.push(w(i as f64 * 0.1, target, target * 0.5, 40.0, 400.0, 0.0));
+        }
+        let knee = detect(&series).expect("real break after recovery");
+        let healthy_ceiling = 100.0 + (29 - 12) as f64 * 20.0;
+        assert!(
+            knee.target_rps > 100.0 && knee.target_rps <= healthy_ceiling,
+            "knee {} should come from the healthy stretch",
+            knee.target_rps
+        );
+    }
+
+    /// Errors partway through a healthy run are still a knee — the fix must not
+    /// silence genuine error-rate breaks.
+    #[test]
+    fn errors_after_a_healthy_baseline_still_report_a_knee() {
+        let mut series: Vec<WindowMetric> = (0..12)
+            .map(|i| w(i as f64, 100.0 + i as f64 * 10.0, 100.0, 2.0, 5.0, 0.0))
+            .collect();
+        series.push(w(12.0, 220.0, 180.0, 2.0, 6.0, 0.4));
+        let knee = detect(&series).expect("error knee after healthy baseline");
+        assert!(knee.reason.contains("error"));
+        assert!(knee.target_rps <= 210.0, "knee {}", knee.target_rps);
     }
 
     #[test]
