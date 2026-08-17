@@ -10,7 +10,7 @@ mod ui;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -337,6 +337,7 @@ async fn run(
                 steps,
                 windows,
                 knee: knee.clone(),
+                failure_reason: first_failure().map(str::to_owned),
             };
             report::write_html(&path, &report)?;
             println!("  report:    {}", path.display());
@@ -460,8 +461,50 @@ async fn execute_http(client: &reqwest::Client, step: &Step) -> Outcome {
 
     match req.send().await {
         Ok(resp) if resp.status().is_success() => Outcome::Success,
-        _ => Outcome::Failure,
+        Ok(resp) => {
+            note_failure(|| format!("HTTP {}", resp.status()));
+            Outcome::Failure
+        }
+        Err(e) => {
+            note_failure(|| describe_transport_error(&e));
+            Outcome::Failure
+        }
     }
+}
+
+/// First reason a request failed, kept so a run can explain itself instead of
+/// reporting a bare failure count.
+static FIRST_FAILURE: OnceLock<String> = OnceLock::new();
+
+/// Record the reason once. The closure only runs for the first failure, so a
+/// fully-failing run does not pay for formatting on every request.
+fn note_failure(reason: impl FnOnce() -> String) {
+    if FIRST_FAILURE.get().is_none() {
+        let _ = FIRST_FAILURE.set(reason());
+    }
+}
+
+pub fn first_failure() -> Option<&'static str> {
+    FIRST_FAILURE.get().map(String::as_str)
+}
+
+fn describe_transport_error(e: &reqwest::Error) -> String {
+    let kind = if e.is_timeout() {
+        "request timed out"
+    } else if e.is_connect() {
+        "could not connect"
+    } else if e.is_body() || e.is_decode() {
+        "could not read response"
+    } else {
+        "transport error"
+    };
+    // reqwest wraps hyper wraps std::io; the innermost source carries the
+    // detail that actually tells you what to fix ("connection refused").
+    let mut src: &dyn std::error::Error = e;
+    while let Some(next) = src.source() {
+        src = next;
+    }
+    format!("{kind}: {src}")
 }
 
 async fn recorder_loop(
@@ -640,7 +683,14 @@ fn print_summary(sent: u64, s: &Summary, steps: &[StepSummary], knee: Option<&Kn
     }
 
     println!();
-    if let Some(k) = knee {
+    if let Some(reason) = first_failure() {
+        println!("  first failure: {reason}");
+    }
+    if s.total > 0 && s.success == 0 {
+        println!("  no capacity measured: every request failed, so none of the");
+        println!("  latency above reflects work your target actually did.");
+        println!();
+    } else if let Some(k) = knee {
         println!(
             "  knee:      ≈ {:.0} req/s at t={:.1}s ({})",
             k.target_rps, k.t, k.reason

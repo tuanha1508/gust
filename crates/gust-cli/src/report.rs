@@ -18,6 +18,8 @@ pub struct RunReport {
     pub steps: Vec<StepSummary>,
     pub windows: Vec<WindowMetric>,
     pub knee: Option<Knee>,
+    /// Why the first failed request failed, if any did.
+    pub failure_reason: Option<String>,
 }
 
 pub fn write_html(path: &Path, report: &RunReport) -> Result<()> {
@@ -34,16 +36,29 @@ pub fn write_html(path: &Path, report: &RunReport) -> Result<()> {
 
 fn render(r: &RunReport) -> String {
     let data = serde_json::to_string(r).unwrap_or_else(|_| "{}".into());
-    let knee_banner = match &r.knee {
-        Some(k) => format!(
-            "<div class=\"knee\">Knee ≈ <strong>{:.0} req/s</strong> at t={:.1}s \
-             — recommended safe ≈ <strong>{:.0} req/s</strong><br/><span class=\"muted\">{}</span></div>",
-            k.target_rps,
-            k.t,
-            k.recommended_rps,
-            escape(&k.reason)
-        ),
-        None => "<div class=\"knee none\">No clear knee detected in this run.</div>".into(),
+    let dead_target = r.summary.total > 0 && r.summary.success == 0;
+    let knee_banner = if dead_target {
+        // Reporting a capacity here would be fiction: nothing was ever served.
+        let detail = match &r.failure_reason {
+            Some(reason) => escape(reason),
+            None => "every request failed".into(),
+        };
+        format!(
+            "<div class=\"knee dead\">No capacity measured — <strong>every request failed</strong>\
+             <br/><span class=\"muted\">{detail}</span></div>"
+        )
+    } else {
+        match &r.knee {
+            Some(k) => format!(
+                "<div class=\"knee\">Knee ≈ <strong>{:.0} req/s</strong> at t={:.1}s \
+                 — recommended safe ≈ <strong>{:.0} req/s</strong><br/><span class=\"muted\">{}</span></div>",
+                k.target_rps,
+                k.t,
+                k.recommended_rps,
+                escape(&k.reason)
+            ),
+            None => "<div class=\"knee none\">No clear knee detected in this run.</div>".into(),
+        }
     };
 
     let s = &r.summary;
@@ -95,6 +110,7 @@ fn render(r: &RunReport) -> String {
     border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem;
   }}
   .knee.none {{ border-color: var(--border); color: var(--muted); }}
+  .knee.dead {{ background: #2c2126; border-color: var(--red); }}
   .muted {{ color: var(--muted); font-size: 0.9rem; }}
   table {{ width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }}
   th, td {{ text-align: right; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }}

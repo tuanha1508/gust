@@ -174,6 +174,24 @@ fn draw_header(f: &mut RFrame, area: ratatui::layout::Rect, info: &RunInfo, fini
 }
 
 fn draw_knee(f: &mut RFrame, area: ratatui::layout::Rect, snap: &Snapshot) {
+    // Nothing was served, so there is no capacity to report — say what broke.
+    let all_failed = snap
+        .summary
+        .as_ref()
+        .is_some_and(|s| s.total > 0 && s.success == 0);
+    if all_failed {
+        let detail = crate::first_failure().unwrap_or("every request failed");
+        let line = Line::from(vec![
+            Span::styled("  NO CAPACITY ", bold(Color::LightRed)),
+            Span::raw(format!("every request failed · {detail}")),
+        ]);
+        f.render_widget(
+            Paragraph::new(line).block(Block::default().borders(Borders::ALL)),
+            area,
+        );
+        return;
+    }
+
     let line = match &snap.knee {
         Some(k) => Line::from(vec![
             Span::styled("  KNEE ", bold(KNEE)),
