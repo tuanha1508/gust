@@ -1,0 +1,9 @@
+[package]
+name = "gust-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hdrhistogram = { workspace = true }
+serde = { workspace = true }

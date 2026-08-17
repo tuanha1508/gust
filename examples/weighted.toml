@@ -1,0 +1,15 @@
+# Example: weighted mix of endpoints (each arrival hits one step).
+name = "demo-mix"
+mode = "weighted"
+
+[[steps]]
+name = "home"
+method = "GET"
+url = "http://127.0.0.1:8080/"
+weight = 3
+
+[[steps]]
+name = "robots"
+method = "GET"
+url = "http://127.0.0.1:8080/robots.txt"
+weight = 1

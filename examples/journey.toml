@@ -1,0 +1,15 @@
+# Example: sequential API journey with think-time between steps.
+name = "demo-journey"
+mode = "sequence"
+
+[[steps]]
+name = "home"
+method = "GET"
+url = "http://127.0.0.1:8080/"
+think_ms = 20
+
+[[steps]]
+name = "again"
+method = "GET"
+url = "http://127.0.0.1:8080/"
+think_ms = 0

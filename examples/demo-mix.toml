@@ -1,0 +1,29 @@
+# Weighted mix against examples/demo-api.js.
+#
+# The routes cost 1x, 3x and 5x service time from the same pool, so the
+# expensive endpoints hold slots and drag down the cheap ones — the reason a
+# single-endpoint test can look healthy while real traffic is degrading.
+#
+#   node examples/demo-api.js
+#   gust run --scenario examples/demo-mix.toml --profile ramp --from 100 --to 900 --duration 30
+
+name = "demo-mix"
+mode = "weighted"
+
+[[steps]]
+name = "items"
+method = "GET"
+url = "http://127.0.0.1:8080/api/items"
+weight = 6
+
+[[steps]]
+name = "search"
+method = "GET"
+url = "http://127.0.0.1:8080/api/search"
+weight = 3
+
+[[steps]]
+name = "checkout"
+method = "GET"
+url = "http://127.0.0.1:8080/api/checkout"
+weight = 1
