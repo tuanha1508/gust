@@ -6,7 +6,7 @@ members = ["crates/gust-core", "crates/gust-cli"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/tuna/gust"
+repository = "https://github.com/tuanha1508/gust"
 authors = ["Tuna"]
 
 [workspace.dependencies]
