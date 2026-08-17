@@ -3,7 +3,7 @@
 //! Throughput, raw-vs-corrected percentiles, windowed latency chart, knee
 //! marker, and in-flight depth (backpressure / Little’s Law intuition).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,9 +29,10 @@ pub fn run_dashboard(
     info: &RunInfo,
     sent: Arc<AtomicU64>,
     state: Arc<Mutex<UiState>>,
+    stop: Arc<AtomicBool>,
 ) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, info, &sent, &state);
+    let result = event_loop(&mut terminal, info, &sent, &state, &stop);
     ratatui::restore();
     result
 }
@@ -41,6 +42,7 @@ fn event_loop(
     info: &RunInfo,
     sent: &Arc<AtomicU64>,
     state: &Arc<Mutex<UiState>>,
+    stop: &Arc<AtomicBool>,
 ) -> Result<()> {
     loop {
         let (snapshot, finished) = {
@@ -54,6 +56,7 @@ fn event_loop(
                     target_rps: s.target_rps,
                     in_flight: s.in_flight,
                     knee: s.knee.clone(),
+                    stopping: s.stopping,
                 },
                 s.finished,
             )
@@ -63,7 +66,16 @@ fn event_loop(
         terminal.draw(|f| draw(f, info, sent_n, &snapshot, finished))?;
 
         if should_quit()? {
-            return Ok(());
+            if finished {
+                // Second q (or q after a natural end): leave the dashboard.
+                return Ok(());
+            }
+            // First q while running: stop scheduling and drain in-flight.
+            // Stay on the dashboard until the recorder marks finished.
+            stop.store(true, Ordering::Relaxed);
+            if let Ok(mut s) = state.lock() {
+                s.stopping = true;
+            }
         }
     }
 }
@@ -90,6 +102,7 @@ struct Snapshot {
     target_rps: f64,
     in_flight: u64,
     knee: Option<Knee>,
+    stopping: bool,
 }
 
 fn draw(f: &mut RFrame, info: &RunInfo, sent: u64, snap: &Snapshot, finished: bool) {
@@ -122,7 +135,7 @@ fn draw(f: &mut RFrame, info: &RunInfo, sent: u64, snap: &Snapshot, finished: bo
     let [latency, inflight] =
         Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(charts);
 
-    draw_header(f, header, info, finished);
+    draw_header(f, header, info, finished, snap.stopping);
     draw_knee(f, knee_row, snap);
     draw_stats(f, stats, sent, snap);
     draw_table(f, pct_area, snap);
@@ -133,9 +146,14 @@ fn draw(f: &mut RFrame, info: &RunInfo, sent: u64, snap: &Snapshot, finished: bo
     draw_inflight_chart(f, inflight, info, snap);
 
     let hint = if finished {
-        "finished — press q to exit"
+        "finished — press q to exit".to_string()
+    } else if snap.stopping {
+        format!(
+            "stopping — draining {} in-flight… (summary follows)",
+            snap.in_flight
+        )
     } else {
-        "running — press q to stop"
+        "running — press q to stop".to_string()
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -146,8 +164,20 @@ fn draw(f: &mut RFrame, info: &RunInfo, sent: u64, snap: &Snapshot, finished: bo
     );
 }
 
-fn draw_header(f: &mut RFrame, area: ratatui::layout::Rect, info: &RunInfo, finished: bool) {
-    let status = if finished { "DONE" } else { "LIVE" };
+fn draw_header(
+    f: &mut RFrame,
+    area: ratatui::layout::Rect,
+    info: &RunInfo,
+    finished: bool,
+    stopping: bool,
+) {
+    let (status, status_color) = if finished {
+        ("DONE", Color::Green)
+    } else if stopping {
+        ("STOPPING", Color::Yellow)
+    } else {
+        ("LIVE", Color::Cyan)
+    };
     let title = Line::from(vec![
         Span::styled(
             " gust ",
@@ -163,7 +193,7 @@ fn draw_header(f: &mut RFrame, area: ratatui::layout::Rect, info: &RunInfo, fini
         Span::styled(
             format!("[{status}]"),
             Style::default()
-                .fg(if finished { Color::Green } else { Color::Cyan })
+                .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
