@@ -8,8 +8,10 @@
 //
 //   node examples/demo-api.js [--port 8080] [--pool 8] [--service-ms 10]
 //
-// Theoretical capacity = pool / service_ms * 1000 req/s
-// (default: 8 / 10ms = ~800 req/s)
+// Theoretical ceiling = pool / service_ms * 1000 req/s (default 8 / 10ms = 800).
+// Measured capacity is ~10% lower (~720 req/s): Node's single-threaded event
+// loop adds ~1ms of overhead per request on top of the service sleep, so the
+// effective service time is ~11ms, not 10ms.
 
 const http = require("http");
 
@@ -82,8 +84,12 @@ server.maxConnections = 100_000;
 server.keepAliveTimeout = 60_000;
 
 server.listen(PORT, "127.0.0.1", () => {
-  const capacity = Math.round((POOL / SERVICE_MS) * 1000);
+  const ceiling = Math.round((POOL / SERVICE_MS) * 1000);
+  const measured = Math.round((POOL / (SERVICE_MS + 1)) * 1000);
   console.log(`demo-api listening on http://127.0.0.1:${PORT}`);
-  console.log(`pool=${POOL} service=${SERVICE_MS}ms → capacity ≈ ${capacity} req/s for /`);
+  console.log(
+    `pool=${POOL} service=${SERVICE_MS}ms → theoretical ceiling ${ceiling} req/s, ` +
+      `measured knee ≈ ${measured} req/s (event-loop overhead)`,
+  );
   console.log(`routes: ${Object.keys(ROUTES).join(", ")} (cost multiplier 1..5)`);
 });
