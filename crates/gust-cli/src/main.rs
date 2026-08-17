@@ -9,7 +9,7 @@ mod ui;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -132,6 +132,8 @@ pub struct UiState {
     pub target_rps: f64,
     pub in_flight: u64,
     pub knee: Option<Knee>,
+    /// Stop requested: no new arrivals; waiting for in-flight to finish.
+    pub stopping: bool,
     pub finished: bool,
 }
 
@@ -275,6 +277,7 @@ async fn run(
     let (tx, rx) = mpsc::unbounded_channel::<Sample>();
     let sent = Arc::new(AtomicU64::new(0));
     let in_flight = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
     let state = Arc::new(Mutex::new(UiState::default()));
 
     let info = RunInfo {
@@ -284,6 +287,9 @@ async fn run(
     };
 
     let started_at = iso_now();
+    // Bound how long we wait for stragglers after stop: one request timeout
+    // plus a little slack for the final samples to reach the recorder.
+    let drain_limit = Duration::from_secs(timeout_secs.saturating_add(2));
 
     let recorder_handle = {
         let state = Arc::clone(&state);
@@ -296,9 +302,20 @@ async fn run(
     let generator = {
         let sent = Arc::clone(&sent);
         let in_flight = Arc::clone(&in_flight);
+        let stop = Arc::clone(&stop);
         let profile = profile.clone();
         tokio::spawn(async move {
-            generate_load(client, target, profile, tx, sent, in_flight).await;
+            generate_load(LoadGen {
+                client,
+                target,
+                profile,
+                tx,
+                sent,
+                in_flight,
+                stop,
+                drain_limit,
+            })
+            .await;
         })
     };
 
@@ -307,12 +324,28 @@ async fn run(
             "gust: {} for {}s · {}",
             info.profile_label, info.duration, info.url
         );
-        let _ = generator.await;
+        let mut generator = generator;
+        tokio::select! {
+            res = &mut generator => { let _ = res; }
+            _ = tokio::signal::ctrl_c() => {
+                println!("  stopping — draining in-flight requests…");
+                request_stop(&stop, &state);
+                let _ = generator.await;
+            }
+        }
         wait_finished(&state).await;
     } else {
-        ui::run_dashboard(&info, Arc::clone(&sent), Arc::clone(&state))?;
-        generator.abort();
+        ui::run_dashboard(
+            &info,
+            Arc::clone(&sent),
+            Arc::clone(&state),
+            Arc::clone(&stop),
+        )?;
+        // Dashboard returns only after the run has finished (natural end or
+        // drain after q). Make sure the generator is not left hanging.
+        request_stop(&stop, &state);
         let _ = generator.await;
+        wait_finished(&state).await;
     }
 
     let _ = recorder_handle.await;
@@ -346,21 +379,40 @@ async fn run(
     Ok(())
 }
 
-/// Open-model generator: each tick starts one arrival (single request or journey).
-async fn generate_load(
+/// Inputs for the open-model generator task.
+struct LoadGen {
     client: reqwest::Client,
     target: Target,
     profile: LoadProfile,
     tx: mpsc::UnboundedSender<Sample>,
     sent: Arc<AtomicU64>,
     in_flight: Arc<AtomicU64>,
-) {
+    stop: Arc<AtomicBool>,
+    drain_limit: Duration,
+}
+
+/// Open-model generator: each tick starts one arrival (single request or journey).
+///
+/// When `stop` is set (Ctrl-C / `q`), scheduling ends immediately and we wait for
+/// in-flight requests to finish recording before dropping the sample channel —
+/// so the summary and report cover everything that was actually sent.
+async fn generate_load(g: LoadGen) {
+    let LoadGen {
+        client,
+        target,
+        profile,
+        tx,
+        sent,
+        in_flight,
+        stop,
+        drain_limit,
+    } = g;
     let start = Instant::now();
     let total = profile.duration();
     let mut planned_s = 0.0f64;
     let mut arrival: u64 = 0;
 
-    while start.elapsed() < total {
+    while start.elapsed() < total && !stop.load(Ordering::Relaxed) {
         let elapsed = start.elapsed();
         let rate = profile.rate_at(elapsed).max(0.1);
         let interval = Duration::from_secs_f64(1.0 / rate);
@@ -369,9 +421,12 @@ async fn generate_load(
         let due = start + Duration::from_secs_f64(planned_s);
         let now = Instant::now();
         if due > now {
-            tokio::time::sleep(due - now).await;
+            tokio::select! {
+                _ = tokio::time::sleep(due - now) => {}
+                _ = wait_until_stopped(&stop) => break,
+            }
         }
-        if start.elapsed() >= total {
+        if start.elapsed() >= total || stop.load(Ordering::Relaxed) {
             break;
         }
 
@@ -406,6 +461,32 @@ async fn generate_load(
         });
         sent.fetch_add(1, Ordering::Relaxed);
     }
+
+    drain_in_flight(&in_flight, drain_limit).await;
+    // `tx` drops here: once every worker has sent its sample and dropped its
+    // clone, the recorder sees end-of-stream and finalizes.
+}
+
+async fn wait_until_stopped(stop: &AtomicBool) {
+    while !stop.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Wait until nothing is in flight (or the deadline hits). Decrement happens
+/// after each sample is sent, so zero means the recorder has every arrival.
+async fn drain_in_flight(in_flight: &AtomicU64, limit: Duration) {
+    let start = Instant::now();
+    while in_flight.load(Ordering::Relaxed) > 0 && start.elapsed() < limit {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn request_stop(stop: &AtomicBool, state: &Mutex<UiState>) {
+    stop.store(true, Ordering::Relaxed);
+    if let Ok(mut s) = state.lock() {
+        s.stopping = true;
+    }
 }
 
 async fn fire_one(
@@ -421,7 +502,6 @@ async fn fire_one(
     let t0 = Instant::now();
     let outcome = execute_http(client, step).await;
     let latency = t0.elapsed();
-    in_flight.fetch_sub(1, Ordering::Relaxed);
     let _ = tx.send(Sample {
         latency,
         outcome,
@@ -429,6 +509,9 @@ async fn fire_one(
         target_rps: rate,
         step: tag_step.then(|| step.name.clone()),
     });
+    // Decrement after send so a drain waiting on in_flight==0 cannot return
+    // before the sample is in the channel.
+    in_flight.fetch_sub(1, Ordering::Relaxed);
 }
 
 async fn execute_http(client: &reqwest::Client, step: &Step) -> Outcome {

@@ -70,7 +70,9 @@ TUI requires a real interactive terminal (not verified in headless agent shell).
 
 ## Known gaps / debt
 
-1. **Early quit** — aborting generator may leave in-flight requests; summary may be partial.
+1. ~~**Early quit**~~ — Ctrl-C / `q` now stops scheduling, drains in-flight,
+   and prints a full summary + report. Dashboard stays up with a STOPPING
+   status until the drain finishes.
 2. **Throughput in UI** — instantaneous window estimate; can be noisy at low RPS.
 3. **Knee on short/noisy runs** — mitigated: require ≥10 windows, ≥20ms absolute
    p99 rise, and sustained hot windows (or throughput collapse). Unit-tested against
