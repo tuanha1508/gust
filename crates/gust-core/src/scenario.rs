@@ -1,5 +1,7 @@
 //! HTTP scenario definitions (pure data — no I/O).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// How arrivals pick work from a scenario file.
@@ -11,6 +13,47 @@ pub enum ScenarioMode {
     Sequence,
     /// Each arrival picks a single step by `weight`.
     Weighted,
+}
+
+/// Shared credentials applied to every step in a scenario.
+///
+/// Prefer `bearer`, or `user` + `password` for HTTP Basic. Mixing both is an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ScenarioAuth {
+    /// `Authorization: Bearer …`
+    #[serde(default)]
+    pub bearer: Option<String>,
+    /// Basic-auth username (pair with `password`).
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Basic-auth password.
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+impl ScenarioAuth {
+    pub fn is_empty(&self) -> bool {
+        self.bearer.is_none() && self.user.is_none() && self.password.is_none()
+    }
+
+    /// Normalize and reject contradictory / incomplete auth.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(tok) = &self.bearer
+            && tok.is_empty()
+        {
+            return Err("auth.bearer must not be empty".into());
+        }
+        if self.bearer.is_some() && (self.user.is_some() || self.password.is_some()) {
+            return Err("auth: use bearer *or* user/password, not both".into());
+        }
+        match (&self.user, &self.password) {
+            (None, None) => Ok(()),
+            (Some(u), Some(_)) if u.is_empty() => Err("auth.user must not be empty".into()),
+            (Some(_), Some(_)) => Ok(()),
+            (Some(_), None) => Err("auth.password is required when auth.user is set".into()),
+            (None, Some(_)) => Err("auth.user is required when auth.password is set".into()),
+        }
+    }
 }
 
 /// One HTTP request template inside a scenario.
@@ -34,7 +77,7 @@ pub struct Step {
     pub body: Option<String>,
     /// Extra headers as key → value.
     #[serde(default)]
-    pub headers: std::collections::BTreeMap<String, String>,
+    pub headers: BTreeMap<String, String>,
 }
 
 fn default_method() -> String {
@@ -53,6 +96,15 @@ pub struct Scenario {
     #[serde(default)]
     pub mode: ScenarioMode,
     pub steps: Vec<Step>,
+    /// Credentials applied to every step unless a step overrides `Authorization`.
+    #[serde(default)]
+    pub auth: ScenarioAuth,
+    /// Seed cookies (`name = value`) sent on every request.
+    #[serde(default)]
+    pub cookies: BTreeMap<String, String>,
+    /// Persist `Set-Cookie` from responses and replay them (login → API journeys).
+    #[serde(default)]
+    pub cookie_jar: bool,
 }
 
 impl Scenario {
@@ -60,6 +112,17 @@ impl Scenario {
     pub fn validate(mut self) -> Result<Self, String> {
         if self.steps.is_empty() {
             return Err("scenario must have at least one step".into());
+        }
+        self.auth.validate()?;
+        for (name, value) in &self.cookies {
+            if name.is_empty() {
+                return Err("cookies: name must not be empty".into());
+            }
+            if value.contains(';') {
+                return Err(format!(
+                    "cookies.{name}: value must not contain `;` (put attributes in the jar via Set-Cookie)"
+                ));
+            }
         }
         for (i, step) in self.steps.iter_mut().enumerate() {
             if step.url.trim().is_empty() {
@@ -138,6 +201,9 @@ mod tests {
             name: "x".into(),
             mode: ScenarioMode::Sequence,
             steps: vec![],
+            auth: ScenarioAuth::default(),
+            cookies: Default::default(),
+            cookie_jar: false,
         };
         assert!(s.validate().is_err());
     }
@@ -148,6 +214,9 @@ mod tests {
             name: "mix".into(),
             mode: ScenarioMode::Weighted,
             steps: vec![step("a", 1), step("b", 3)],
+            auth: ScenarioAuth::default(),
+            cookies: Default::default(),
+            cookie_jar: false,
         }
         .validate()
         .unwrap();
@@ -183,6 +252,9 @@ mod tests {
                 },
                 step("two", 1),
             ],
+            auth: ScenarioAuth::default(),
+            cookies: Default::default(),
+            cookie_jar: false,
         }
         .validate()
         .unwrap();
@@ -191,5 +263,63 @@ mod tests {
         assert_eq!(s.steps[0].name, "step-0");
         assert_eq!(s.steps[0].weight, 1);
         assert_eq!(s.steps[0].think_ms, 25);
+    }
+
+    #[test]
+    fn auth_rejects_bearer_and_basic_together() {
+        let s = Scenario {
+            name: "x".into(),
+            mode: ScenarioMode::Sequence,
+            steps: vec![step("a", 1)],
+            auth: ScenarioAuth {
+                bearer: Some("tok".into()),
+                user: Some("u".into()),
+                password: Some("p".into()),
+            },
+            cookies: Default::default(),
+            cookie_jar: false,
+        };
+        assert!(s.validate().unwrap_err().contains("bearer"));
+    }
+
+    #[test]
+    fn auth_basic_requires_both_fields() {
+        let s = Scenario {
+            name: "x".into(),
+            mode: ScenarioMode::Sequence,
+            steps: vec![step("a", 1)],
+            auth: ScenarioAuth {
+                bearer: None,
+                user: Some("u".into()),
+                password: None,
+            },
+            cookies: Default::default(),
+            cookie_jar: false,
+        };
+        assert!(s.validate().unwrap_err().contains("password"));
+    }
+
+    #[test]
+    fn cookies_and_auth_round_trip_toml() {
+        let raw = r#"
+name = "secure"
+mode = "sequence"
+cookie_jar = true
+
+[auth]
+bearer = "sekrit"
+
+[cookies]
+session = "abc"
+
+[[steps]]
+name = "ping"
+url = "http://127.0.0.1:8080/api/me"
+"#;
+        let s: Scenario = toml::from_str(raw).unwrap();
+        let s = s.validate().unwrap();
+        assert!(s.cookie_jar);
+        assert_eq!(s.auth.bearer.as_deref(), Some("sekrit"));
+        assert_eq!(s.cookies.get("session").map(String::as_str), Some("abc"));
     }
 }

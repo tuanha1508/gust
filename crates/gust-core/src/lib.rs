@@ -16,7 +16,7 @@ mod steps;
 
 pub use knee::{Knee, SAFE_FACTOR, WindowMetric, detect as detect_knee};
 pub use profile::LoadProfile;
-pub use scenario::{Scenario, ScenarioMode, Step};
+pub use scenario::{Scenario, ScenarioAuth, ScenarioMode, Step};
 pub use steps::{MultiRecorder, RunBreakdown, StepSummary};
 
 use std::time::Duration;

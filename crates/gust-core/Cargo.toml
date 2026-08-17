@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 hdrhistogram = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }

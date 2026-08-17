@@ -1,0 +1,16 @@
+# Login once, then hit a protected endpoint — needs --cookie-jar so the
+# Set-Cookie from /login is replayed on /api/me.
+name = "auth-journey"
+mode = "sequence"
+cookie_jar = true
+
+[[steps]]
+name = "login"
+method = "POST"
+url = "http://127.0.0.1:8080/login"
+think_ms = 10
+
+[[steps]]
+name = "me"
+method = "GET"
+url = "http://127.0.0.1:8080/api/me"

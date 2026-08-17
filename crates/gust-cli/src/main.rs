@@ -16,10 +16,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use gust_core::{
-    Knee, LoadProfile, MultiRecorder, Outcome, Scenario, ScenarioMode, Step, StepSummary, Summary,
-    WindowMetric, detect_knee,
+    Knee, LoadProfile, MultiRecorder, Outcome, Scenario, ScenarioAuth, ScenarioMode, Step,
+    StepSummary, Summary, WindowMetric, detect_knee,
 };
 use reqwest::Method;
+use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::mpsc;
 
@@ -61,6 +62,22 @@ enum Command {
         /// Request body for single-URL runs (e.g. JSON).
         #[arg(long)]
         body: Option<String>,
+
+        /// `Authorization: Bearer <token>` (single-URL; also fills scenario auth if unset).
+        #[arg(long = "bearer", value_name = "TOKEN")]
+        bearer: Option<String>,
+
+        /// HTTP Basic auth as `user:password` (single-URL; also fills scenario auth if unset).
+        #[arg(long = "basic-auth", value_name = "USER:PASSWORD")]
+        basic_auth: Option<String>,
+
+        /// Seed cookie `name=value` (repeatable).
+        #[arg(long = "cookie", value_name = "NAME=VALUE")]
+        cookies: Vec<String>,
+
+        /// Persist `Set-Cookie` across requests (needed for login → API journeys).
+        #[arg(long)]
+        cookie_jar: bool,
 
         /// Load profile: constant RPS or linear ramp.
         #[arg(long, value_enum, default_value_t = ProfileKind::Constant)]
@@ -154,6 +171,10 @@ async fn main() -> Result<()> {
             method,
             headers,
             body,
+            bearer,
+            basic_auth,
+            cookies,
+            cookie_jar,
             profile,
             rate,
             from,
@@ -163,9 +184,10 @@ async fn main() -> Result<()> {
             no_ui,
             report,
         } => {
-            let target = build_target(url, scenario, method, headers, body)?;
+            let cli_auth = CliAuth::from_args(bearer, basic_auth, cookies, cookie_jar)?;
+            let (target, shared) = build_target(url, scenario, method, headers, body, &cli_auth)?;
             let load = build_profile(profile, rate, from, to, duration)?;
-            run(target, load, timeout, no_ui, report).await
+            run(target, shared, load, timeout, no_ui, report).await
         }
     }
 }
@@ -176,16 +198,19 @@ fn build_target(
     method: String,
     headers: Vec<String>,
     body: Option<String>,
-) -> Result<Target> {
+    cli_auth: &CliAuth,
+) -> Result<(Target, SharedAuth)> {
     if let Some(path) = scenario_path {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("read scenario {}", path.display()))?;
         let raw: Scenario =
             toml::from_str(&text).with_context(|| format!("parse scenario {}", path.display()))?;
-        let scenario = raw
+        let mut scenario = raw
             .validate()
             .map_err(|e| anyhow::anyhow!("invalid scenario: {e}"))?;
-        return Ok(Target::Scenario(scenario));
+        merge_cli_auth_into_scenario(&mut scenario, cli_auth)?;
+        let shared = SharedAuth::from_scenario(&scenario);
+        return Ok((Target::Scenario(scenario), shared));
     }
 
     let url = url.ok_or_else(|| anyhow::anyhow!("url is required without --scenario"))?;
@@ -199,16 +224,188 @@ fn build_target(
         body,
         headers: header_map,
     };
-    // Reuse scenario validation for method checks.
-    let validated = Scenario {
+    let mut validated = Scenario {
         name: "single".into(),
         mode: ScenarioMode::Sequence,
         steps: vec![step.clone()],
+        auth: ScenarioAuth::default(),
+        cookies: BTreeMap::new(),
+        cookie_jar: false,
     }
     .validate()
     .map_err(|e| anyhow::anyhow!("{e}"))?;
+    merge_cli_auth_into_scenario(&mut validated, cli_auth)?;
+    let shared = SharedAuth::from_scenario(&validated);
     step = validated.steps.into_iter().next().unwrap();
-    Ok(Target::Single(step))
+    Ok((Target::Single(step), shared))
+}
+
+/// CLI auth/cookie flags. Scenario-file values win when already set.
+#[derive(Debug, Clone, Default)]
+struct CliAuth {
+    bearer: Option<String>,
+    basic: Option<(String, String)>,
+    cookies: BTreeMap<String, String>,
+    cookie_jar: bool,
+}
+
+impl CliAuth {
+    fn from_args(
+        bearer: Option<String>,
+        basic_auth: Option<String>,
+        cookies: Vec<String>,
+        cookie_jar: bool,
+    ) -> Result<Self> {
+        if bearer.is_some() && basic_auth.is_some() {
+            bail!("use --bearer or --basic-auth, not both");
+        }
+        let basic = match basic_auth {
+            None => None,
+            Some(raw) => {
+                let (user, pass) = raw
+                    .split_once(':')
+                    .ok_or_else(|| anyhow::anyhow!("--basic-auth must be `user:password`"))?;
+                if user.is_empty() {
+                    bail!("--basic-auth user must not be empty");
+                }
+                Some((user.to_string(), pass.to_string()))
+            }
+        };
+        if let Some(tok) = &bearer
+            && tok.is_empty()
+        {
+            bail!("--bearer must not be empty");
+        }
+        let mut jar_cookies = BTreeMap::new();
+        for c in cookies {
+            let (name, value) = c
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("--cookie must be `name=value`, got `{c}`"))?;
+            if name.is_empty() {
+                bail!("--cookie name must not be empty");
+            }
+            if value.contains(';') {
+                bail!("--cookie value must not contain `;`");
+            }
+            jar_cookies.insert(name.to_string(), value.to_string());
+        }
+        Ok(Self {
+            bearer,
+            basic,
+            cookies: jar_cookies,
+            cookie_jar,
+        })
+    }
+}
+
+fn merge_cli_auth_into_scenario(scenario: &mut Scenario, cli: &CliAuth) -> Result<()> {
+    if scenario.auth.is_empty() {
+        if let Some(tok) = &cli.bearer {
+            scenario.auth.bearer = Some(tok.clone());
+        } else if let Some((u, p)) = &cli.basic {
+            scenario.auth.user = Some(u.clone());
+            scenario.auth.password = Some(p.clone());
+        }
+    } else if cli.bearer.is_some() || cli.basic.is_some() {
+        bail!("scenario already sets [auth]; omit --bearer / --basic-auth");
+    }
+    scenario
+        .auth
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    for (k, v) in &cli.cookies {
+        scenario
+            .cookies
+            .entry(k.clone())
+            .or_insert_with(|| v.clone());
+    }
+    if cli.cookie_jar {
+        scenario.cookie_jar = true;
+    }
+    Ok(())
+}
+
+/// Auth + cookies resolved for a run (from scenario file and/or CLI flags).
+#[derive(Debug, Clone, Default)]
+struct SharedAuth {
+    auth: ScenarioAuth,
+    cookies: BTreeMap<String, String>,
+    cookie_jar: bool,
+}
+
+impl SharedAuth {
+    fn from_scenario(s: &Scenario) -> Self {
+        Self {
+            auth: s.auth.clone(),
+            cookies: s.cookies.clone(),
+            cookie_jar: s.cookie_jar,
+        }
+    }
+
+    fn seed_url<'a>(&self, target: &'a Target) -> &'a str {
+        match target {
+            Target::Single(step) => step.url.as_str(),
+            Target::Scenario(s) => s.steps[0].url.as_str(),
+        }
+    }
+}
+
+/// Per-request auth applied by workers (jar cookies live on the `Client`).
+#[derive(Clone, Default)]
+struct Session {
+    bearer: Option<String>,
+    basic: Option<(String, String)>,
+    /// Static `Cookie` header when the jar is off.
+    cookie_header: Option<String>,
+}
+
+impl Session {
+    fn from_shared(shared: &SharedAuth) -> Self {
+        let cookie_header = if shared.cookie_jar || shared.cookies.is_empty() {
+            None
+        } else {
+            Some(
+                shared
+                    .cookies
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        };
+        Self {
+            bearer: shared.auth.bearer.clone(),
+            basic: match (&shared.auth.user, &shared.auth.password) {
+                (Some(u), Some(p)) => Some((u.clone(), p.clone())),
+                _ => None,
+            },
+            cookie_header,
+        }
+    }
+}
+
+fn build_http_client(
+    timeout_secs: u64,
+    target: &Target,
+    shared: &SharedAuth,
+) -> Result<(reqwest::Client, Session)> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .pool_max_idle_per_host(10_000);
+
+    if shared.cookie_jar {
+        let jar = Arc::new(Jar::default());
+        if let Ok(url) = reqwest::Url::parse(shared.seed_url(target)) {
+            for (name, value) in &shared.cookies {
+                jar.add_cookie_str(&format!("{name}={value}; Path=/"), &url);
+            }
+        }
+        builder = builder.cookie_provider(jar);
+    }
+
+    let client = builder.build()?;
+    Ok((client, Session::from_shared(shared)))
 }
 
 fn parse_headers(raw: &[String]) -> Result<BTreeMap<String, String>> {
@@ -261,6 +458,7 @@ fn build_profile(
 
 async fn run(
     target: Target,
+    shared: SharedAuth,
     profile: LoadProfile,
     timeout_secs: u64,
     no_ui: bool,
@@ -269,10 +467,7 @@ async fn run(
     let total_duration = profile.duration();
     let duration_secs = total_duration.as_secs().max(1);
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .pool_max_idle_per_host(10_000)
-        .build()?;
+    let (client, session) = build_http_client(timeout_secs, &target, &shared)?;
 
     let (tx, rx) = mpsc::unbounded_channel::<Sample>();
     let sent = Arc::new(AtomicU64::new(0));
@@ -307,6 +502,7 @@ async fn run(
         tokio::spawn(async move {
             generate_load(LoadGen {
                 client,
+                session,
                 target,
                 profile,
                 tx,
@@ -382,6 +578,7 @@ async fn run(
 /// Inputs for the open-model generator task.
 struct LoadGen {
     client: reqwest::Client,
+    session: Session,
     target: Target,
     profile: LoadProfile,
     tx: mpsc::UnboundedSender<Sample>,
@@ -399,6 +596,7 @@ struct LoadGen {
 async fn generate_load(g: LoadGen) {
     let LoadGen {
         client,
+        session,
         target,
         profile,
         tx,
@@ -431,6 +629,7 @@ async fn generate_load(g: LoadGen) {
         }
 
         let client = client.clone();
+        let session = session.clone();
         let target = target.clone();
         let tx = tx.clone();
         let in_flight = Arc::clone(&in_flight);
@@ -441,16 +640,25 @@ async fn generate_load(g: LoadGen) {
             match &target {
                 Target::Single(step) => {
                     // Single-URL runs stay overall-only; no per-step table noise.
-                    fire_one(&client, step, interval, rate, &tx, &in_flight, false).await;
+                    fire_one(
+                        &client, &session, step, interval, rate, &tx, &in_flight, false,
+                    )
+                    .await;
                 }
                 Target::Scenario(sc) => match sc.mode {
                     ScenarioMode::Weighted => {
                         let step = sc.pick_weighted(n);
-                        fire_one(&client, step, interval, rate, &tx, &in_flight, true).await;
+                        fire_one(
+                            &client, &session, step, interval, rate, &tx, &in_flight, true,
+                        )
+                        .await;
                     }
                     ScenarioMode::Sequence => {
                         for (i, step) in sc.steps.iter().enumerate() {
-                            fire_one(&client, step, interval, rate, &tx, &in_flight, true).await;
+                            fire_one(
+                                &client, &session, step, interval, rate, &tx, &in_flight, true,
+                            )
+                            .await;
                             if step.think_ms > 0 && i + 1 < sc.steps.len() {
                                 tokio::time::sleep(Duration::from_millis(step.think_ms)).await;
                             }
@@ -489,8 +697,10 @@ fn request_stop(stop: &AtomicBool, state: &Mutex<UiState>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fire_one(
     client: &reqwest::Client,
+    session: &Session,
     step: &Step,
     interval: Duration,
     rate: f64,
@@ -500,7 +710,7 @@ async fn fire_one(
 ) {
     in_flight.fetch_add(1, Ordering::Relaxed);
     let t0 = Instant::now();
-    let outcome = execute_http(client, step).await;
+    let outcome = execute_http(client, session, step).await;
     let latency = t0.elapsed();
     let _ = tx.send(Sample {
         latency,
@@ -514,7 +724,7 @@ async fn fire_one(
     in_flight.fetch_sub(1, Ordering::Relaxed);
 }
 
-async fn execute_http(client: &reqwest::Client, step: &Step) -> Outcome {
+async fn execute_http(client: &reqwest::Client, session: &Session, step: &Step) -> Outcome {
     let method = match step.method.as_str() {
         "GET" => Method::GET,
         "POST" => Method::POST,
@@ -537,6 +747,26 @@ async fn execute_http(client: &reqwest::Client, step: &Step) -> Outcome {
             }
         }
         req = req.headers(map);
+    }
+    // Step headers win if they already set Authorization / Cookie.
+    let has_auth = step
+        .headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("authorization"));
+    let has_cookie = step
+        .headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("cookie"));
+
+    if !has_auth {
+        if let Some(token) = &session.bearer {
+            req = req.bearer_auth(token);
+        } else if let Some((user, pass)) = &session.basic {
+            req = req.basic_auth(user, Some(pass));
+        }
+    }
+    if !has_cookie && let Some(cookie) = &session.cookie_header {
+        req = req.header(reqwest::header::COOKIE, cookie);
     }
     if let Some(body) = &step.body {
         req = req.body(body.clone());
@@ -859,5 +1089,30 @@ mod tests {
         assert_eq!(h["X-Url"], "http://x/y");
         assert!(parse_headers(&["nocolon".into()]).is_err());
         assert!(parse_headers(&[": empty".into()]).is_err());
+    }
+
+    #[test]
+    fn cli_auth_parses_basic_bearer_and_cookies() {
+        let a = CliAuth::from_args(
+            Some("tok".into()),
+            None,
+            vec!["sid=abc".into(), "theme=dark".into()],
+            true,
+        )
+        .unwrap();
+        assert_eq!(a.bearer.as_deref(), Some("tok"));
+        assert!(a.basic.is_none());
+        assert_eq!(a.cookies["sid"], "abc");
+        assert!(a.cookie_jar);
+
+        let b = CliAuth::from_args(None, Some("demo:s3cret".into()), vec![], false).unwrap();
+        assert_eq!(
+            b.basic.as_ref().map(|(u, p)| (u.as_str(), p.as_str())),
+            Some(("demo", "s3cret"))
+        );
+
+        assert!(CliAuth::from_args(Some("t".into()), Some("u:p".into()), vec![], false).is_err());
+        assert!(CliAuth::from_args(None, Some("nopass".into()), vec![], false).is_err());
+        assert!(CliAuth::from_args(None, None, vec!["bad".into()], false).is_err());
     }
 }
