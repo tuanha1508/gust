@@ -75,11 +75,14 @@ TUI requires a real interactive terminal (not verified in headless agent shell).
 3. **Knee on short/noisy runs** — mitigated: require ≥10 windows, ≥20ms absolute
    p99 rise, and sustained hot windows (or throughput collapse). Unit-tested against
    the prior false-positive fixture.
-4. **Ramp knee is noisy** — on a fast ramp the detector can fire a window early
-   or late (observed ~850–1385 req/s across runs against a ~720 req/s target),
-   because the ramp crosses the capacity band in a second or two. A constant-rate
-   sweep is the reliable capacity measurement; the ramp knee is "≈ where it
-   breaks". Safe-load advice (75% of knee) still lands under real capacity.
+4. **Ramp knee ≈ steady-state capacity** — a constant-rate sweep is still the
+   sharper capacity measurement (queue needs dwell time to form), but the ramp
+   knee no longer swings by hundreds of req/s. Mitigated: service-floor baseline
+   from the 20th percentile of low-error windows (resists a hot start), last
+   healthy window requires p99 near that floor (not merely low errors), and
+   gradual climbs fire after 3 sustained hot windows. Dogfooded: 5 back-to-back
+   ramps against pool-8 landed 810–871 req/s (stdev ≈23); previously a
+   contaminated start reported ~1380.
 5. ~~**`corrected` min below `raw` min**~~ — corrected min is now shown as `—`.
 6. **Steps profile** — optional ramp variant; not implemented.
 7. **`gust report <run.json>`** — HTML written from live run only.

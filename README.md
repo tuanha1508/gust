@@ -127,11 +127,12 @@ So the real breaking point is **~720 req/s** — close to `pool ÷ effective
 service time` (8 ÷ 11ms ≈ 727), and about 10% under the naive `8 ÷ 10ms = 800`
 ceiling because Node's single-threaded event loop adds ~1ms per request.
 
-On a *ramp*, Gust reports a single knee near this point, but the exact number
-is noisier than the sweep: a ramp climbs through the capacity band in a second
-or two, so transient queueing can trip the detector a window early or late.
-Treat the ramp knee as "≈ where it breaks" and the *recommended* load (75% of
-knee) as the number to actually operate under.
+On a *ramp*, Gust reports a single knee near this band. The exact number is
+a little higher than the sweep (~800–870 vs ~720) because a ramp does not dwell
+long enough at each rate for the queue to fully form — treat it as "≈ where it
+breaks" and the *recommended* load (75% of knee) as the number to operate under.
+Across back-to-back runs the ramp knee stays in a tight band; it no longer
+swings to ~2× capacity when a prior run left the target still queueing.
 
 ## Architecture
 
