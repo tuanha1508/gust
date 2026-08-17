@@ -66,8 +66,17 @@ cargo run --release -p gust -- run --scenario examples/journey.toml --rate 50 --
 # Method / headers / body:
 cargo run --release -p gust -- run http://127.0.0.1:8080/api/items \
   --method POST --header "Content-Type: application/json" --body '{"ok":true}'
-```
 
+# Bearer / Basic / cookies (demo `/api/me` requires one of these):
+cargo run --release -p gust -- run http://127.0.0.1:8080/api/me \
+  --bearer demotoken --rate 50 --duration 5 --no-ui
+cargo run --release -p gust -- run http://127.0.0.1:8080/api/me \
+  --basic-auth demo:demo --rate 50 --duration 5 --no-ui
+
+# Login → protected API via cookie jar:
+cargo run --release -p gust -- run --scenario examples/auth-journey.toml \
+  --cookie-jar --rate 20 --duration 5 --no-ui
+```
 The live dashboard shows throughput, in-flight depth, the cumulative raw-vs-corrected
 percentile table, latency over time, and a knee banner when the break is detected.
 Press `q` to stop.

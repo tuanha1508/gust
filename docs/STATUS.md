@@ -88,7 +88,9 @@ TUI requires a real interactive terminal (not verified in headless agent shell).
 5. ~~**`corrected` min below `raw` min**~~ — corrected min is now shown as `—`.
 6. **Steps profile** — optional ramp variant; not implemented.
 7. **`gust report <run.json>`** — HTML written from live run only.
-8. **No cookie jar / auth helpers** — headers only.
+8. ~~**No cookie jar / auth helpers**~~ — `--bearer`, `--basic-auth`,
+   `--cookie`, `--cookie-jar`, plus scenario `[auth]` / `[cookies]` /
+   `cookie_jar`. Demo: `POST /login` + `GET /api/me`, `examples/auth-journey.toml`.
 9. **No `cargo publish` / crates.io claim** for `gust` yet.
 
 ## Next tasks (P4) — only if needed
