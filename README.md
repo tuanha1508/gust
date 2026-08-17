@@ -38,7 +38,7 @@ from a fixed-size pool, so once arrivals outpace capacity, requests queue.
 Nothing is faked — the knee you see is genuine queueing.
 
 ```bash
-# Terminal 1 — a target with capacity ≈ 800 req/s (pool 8 ÷ 10ms service time):
+# Terminal 1 — a target that saturates near ~720 req/s (pool 8, ~11ms effective service):
 node examples/demo-api.js
 
 # Terminal 2 — ramp straight through the breaking point:
@@ -111,17 +111,27 @@ corrected p99 first), so you can see which route was holding the pool:
 
 ### Does the knee detection actually work?
 
-Because the demo API's capacity is known arithmetic (`pool ÷ service time`),
-the detector can be checked against ground truth:
+The demo API's capacity is measurable, so you can check Gust against ground
+truth. A constant-rate sweep (`--rate R --duration 8 --no-ui`) shows exactly
+where pool-8 falls apart — latency sits at the ~11ms service floor until
+arrivals outrun the pool, then p99 climbs an order of magnitude:
 
-| Pool | True capacity | Gust's knee | Recommended safe load |
-| --- | --- | --- | --- |
-| 8 | ~800 req/s | 884 (+10%) | 663 |
-| 4 | ~400 req/s | 462 (+15%) | 347 |
+| Rate | raw p99 | Verdict |
+| --- | --- | --- |
+| 700 req/s | ~11 ms | healthy |
+| 750 req/s | ~25 ms | queueing starts |
+| 800 req/s | ~180 ms | over capacity |
+| 850 req/s | ~670 ms | saturated |
 
-The estimate runs slightly high — it reports the last healthy window while the
-ramp keeps climbing — so the *recommended* load (75% of knee) stays safely
-below real capacity in both cases.
+So the real breaking point is **~720 req/s** — close to `pool ÷ effective
+service time` (8 ÷ 11ms ≈ 727), and about 10% under the naive `8 ÷ 10ms = 800`
+ceiling because Node's single-threaded event loop adds ~1ms per request.
+
+On a *ramp*, Gust reports a single knee near this point, but the exact number
+is noisier than the sweep: a ramp climbs through the capacity band in a second
+or two, so transient queueing can trip the detector a window early or late.
+Treat the ramp knee as "≈ where it breaks" and the *recommended* load (75% of
+knee) as the number to actually operate under.
 
 ## Architecture
 

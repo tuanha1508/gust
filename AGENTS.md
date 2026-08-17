@@ -65,7 +65,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo build --release -p gust
 
-# Demo target with a known capacity (~800 req/s) — the dogfood loop:
+# Demo target that breaks near ~720 req/s (800 theoretical) — the dogfood loop:
 node examples/demo-api.js
 cargo run --release -p gust -- run http://127.0.0.1:8080/ --profile ramp --from 200 --to 1600 --duration 30 --report ./out.html
 cargo run --release -p gust -- run --scenario examples/demo-mix.toml --rate 200 --duration 10 --no-ui
