@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="docs/images/logo.png" alt="Gust" width="192">
+  <img src="docs/images/logo.png" alt="" width="128">
 </p>
 
-<h1 align="center">Gust</h1>
+<h1 align="center">
+  <img src="docs/images/wordmark.png" alt="Gust" width="396">
+</h1>
 
 <p align="center"><strong>Find where your system falls apart.</strong></p>
 
