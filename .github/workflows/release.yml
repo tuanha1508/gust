@@ -1,0 +1,147 @@
+# Build and publish Gust binaries on version tags (v0.1.0, …).
+#
+# Cut a release:
+#   git tag v0.1.0 && git push origin v0.1.0
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (must already exist), e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: gust-x86_64-unknown-linux-gnu.tar.gz
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: gust-aarch64-unknown-linux-gnu.tar.gz
+          - name: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+            archive: gust-aarch64-apple-darwin.tar.gz
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            archive: gust-x86_64-apple-darwin.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release -p gust --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/gust"
+          strip "$BIN" || true
+          STAGE="dist/gust-${{ matrix.target }}"
+          mkdir -p "$STAGE"
+          cp "$BIN" "$STAGE/gust"
+          cp README.md "$STAGE/"
+          cp LICENSE-MIT LICENSE-APACHE "$STAGE/" 2>/dev/null || true
+          tar -C dist -czf "dist/${{ matrix.archive }}" "gust-${{ matrix.target }}"
+          shasum -a 256 "dist/${{ matrix.archive }}" | tee "dist/${{ matrix.archive }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            dist/${{ matrix.archive }}
+            dist/${{ matrix.archive }}.sha256
+
+  publish:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Gust ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          body: |
+            Prebuilt binaries for Gust — *Find where your system falls apart.*
+
+            ### Install (latest)
+
+            ```bash
+            # macOS Apple Silicon
+            curl -fsSL https://github.com/tuanha1508/gust/releases/latest/download/gust-aarch64-apple-darwin.tar.gz \
+              | tar xz && sudo mv gust-aarch64-apple-darwin/gust /usr/local/bin/
+
+            # macOS Intel
+            curl -fsSL https://github.com/tuanha1508/gust/releases/latest/download/gust-x86_64-apple-darwin.tar.gz \
+              | tar xz && sudo mv gust-x86_64-apple-darwin/gust /usr/local/bin/
+
+            # Linux x86_64
+            curl -fsSL https://github.com/tuanha1508/gust/releases/latest/download/gust-x86_64-unknown-linux-gnu.tar.gz \
+              | tar xz && sudo mv gust-x86_64-unknown-linux-gnu/gust /usr/local/bin/
+
+            # Linux aarch64
+            curl -fsSL https://github.com/tuanha1508/gust/releases/latest/download/gust-aarch64-unknown-linux-gnu.tar.gz \
+              | tar xz && sudo mv gust-aarch64-unknown-linux-gnu/gust /usr/local/bin/
+            ```
+
+            Or: `curl -fsSL https://raw.githubusercontent.com/tuanha1508/gust/main/scripts/install.sh | bash`
+
+            ### Verify
+
+            ```bash
+            gust --version
+            node examples/demo-api.js   # terminal A
+            gust run http://127.0.0.1:8080/ --profile ramp --from 200 --to 1600 --duration 30 \
+              --slo-p99-ms 50 --report ./out.html --json ./out.json
+            ```
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

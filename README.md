@@ -31,6 +31,26 @@ histogram against the intended send interval. Every run reports **raw vs
 corrected** percentiles side by side. The gap between them is the latency your
 users actually feel.
 
+## Install
+
+No Rust toolchain required — grab a prebuilt binary:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tuanha1508/gust/main/scripts/install.sh | bash
+```
+
+That installs into `~/.local/bin` (override with `DEST=/usr/local/bin`). Or pick
+an archive from [GitHub Releases](https://github.com/tuanha1508/gust/releases)
+(`macOS arm64/x86_64`, `Linux x86_64/aarch64`).
+
+From source:
+
+```bash
+cargo install --git https://github.com/tuanha1508/gust.git --locked gust
+# or
+git clone https://github.com/tuanha1508/gust.git && cd gust && cargo build --release -p gust
+```
+
 ## Try it
 
 Gust ships a demo API that falls apart for a real reason: it serves requests
@@ -42,10 +62,13 @@ Nothing is faked — the knee you see is genuine queueing.
 node examples/demo-api.js
 
 # Terminal 2 — ramp straight through the breaking point:
-cargo run --release -p gust -- run http://127.0.0.1:8080/ \
+gust run http://127.0.0.1:8080/ \
   --profile ramp --from 200 --to 1600 --duration 30 \
-  --report ./gust-report.html
+  --slo-p99-ms 50 --report ./gust-report.html --json ./gust-run.json
 ```
+
+(If you built from source and have not installed the binary, prefix with
+`cargo run --release -p gust --`.)
 
 Other things you can point it at:
 

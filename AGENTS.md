@@ -78,7 +78,11 @@ cargo run --release -p gust -- run http://127.0.0.1:8080/ --rate 200 --duration 
 
 ## Where to continue
 
-Single-node Gust (P0–P3 + compare/CI) is complete. Prefer distribution polish
-(GitHub Releases, demo GIF) or dogfooding against owned APIs. Only start **P4**
-if a real multi-machine need appears — see [`docs/PLAN.md`](docs/PLAN.md).
-Polish / dogfood tasks are in [`docs/STATUS.md`](docs/STATUS.md).
+Single-node Gust (P0–P3 + compare/CI + diagnosis) is complete. Prefer sharing
+the [GitHub Release](https://github.com/tuanha1508/gust/releases) install path
+or a demo GIF. Only start **P4** if a real multi-machine need appears — see
+[`docs/PLAN.md`](docs/PLAN.md). Polish / dogfood tasks are in
+[`docs/STATUS.md`](docs/STATUS.md).
+
+Cut a binary release: `git tag v0.1.0 && git push origin v0.1.0` (runs
+`.github/workflows/release.yml`).
