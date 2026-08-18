@@ -1,30 +1,31 @@
 //! Gust — find where your system falls apart.
 //!
 //! Open-model HTTP load with HDR raw vs coordinated-omission-corrected
-//! percentiles, live TUI, ramp profiles, knee detection, scenarios, and
-//! HTML reports.
+//! percentiles, live TUI, ramp profiles, knee detection, scenarios,
+//! HTML/JSON reports, compare, and CI thresholds.
 
 mod report;
 mod ui;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use gust_core::{
-    Knee, LoadProfile, MultiRecorder, Outcome, Scenario, ScenarioAuth, ScenarioMode, Step,
-    StepSummary, Summary, WindowMetric, detect_knee,
+    Knee, LoadProfile, MultiRecorder, Outcome, RunMetrics, Scenario, ScenarioAuth, ScenarioMode,
+    SloCapacity, Step, StepSummary, Summary, Thresholds, WindowMetric, check_thresholds,
+    compare as compare_runs, detect_knee,
 };
 use reqwest::Method;
 use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::sync::mpsc;
 
-use report::RunReport;
+use report::{RunReport, SCHEMA_VERSION};
 
 #[derive(Parser)]
 #[command(name = "gust", version, about = "Find where your system falls apart.")]
@@ -42,75 +43,123 @@ enum ProfileKind {
 #[derive(Subcommand)]
 enum Command {
     /// Drive open-model load at a URL or scenario for a fixed duration.
-    Run {
-        /// Target URL (required unless `--scenario` is set).
-        #[arg(required_unless_present = "scenario")]
-        url: Option<String>,
+    Run(Box<RunArgs>),
 
-        /// TOML scenario file (sequence or weighted steps).
-        #[arg(long)]
-        scenario: Option<PathBuf>,
-
-        /// HTTP method for single-URL runs (default GET).
-        #[arg(long, default_value = "GET")]
-        method: String,
-
-        /// Extra header `Name: value` (repeatable) for single-URL runs.
-        #[arg(long = "header", value_name = "NAME: VALUE")]
-        headers: Vec<String>,
-
-        /// Request body for single-URL runs (e.g. JSON).
-        #[arg(long)]
-        body: Option<String>,
-
-        /// `Authorization: Bearer <token>` (single-URL; also fills scenario auth if unset).
-        #[arg(long = "bearer", value_name = "TOKEN")]
-        bearer: Option<String>,
-
-        /// HTTP Basic auth as `user:password` (single-URL; also fills scenario auth if unset).
-        #[arg(long = "basic-auth", value_name = "USER:PASSWORD")]
-        basic_auth: Option<String>,
-
-        /// Seed cookie `name=value` (repeatable).
-        #[arg(long = "cookie", value_name = "NAME=VALUE")]
-        cookies: Vec<String>,
-
-        /// Persist `Set-Cookie` across requests (needed for login → API journeys).
-        #[arg(long)]
-        cookie_jar: bool,
-
-        /// Load profile: constant RPS or linear ramp.
-        #[arg(long, value_enum, default_value_t = ProfileKind::Constant)]
-        profile: ProfileKind,
-
-        /// Requests (or journeys) per second — constant profile.
-        #[arg(short, long, default_value_t = 50)]
-        rate: u64,
-
-        /// Ramp start RPS (`--profile ramp`).
-        #[arg(long)]
-        from: Option<f64>,
-
-        /// Ramp end RPS (`--profile ramp`).
-        #[arg(long)]
-        to: Option<f64>,
-
-        /// How long to run, in seconds.
-        #[arg(short, long, default_value_t = 10)]
-        duration: u64,
-
-        /// Per-request timeout, in seconds.
-        #[arg(short, long, default_value_t = 5)]
-        timeout: u64,
-
-        /// Print a plain summary instead of the live dashboard.
-        #[arg(long)]
-        no_ui: bool,
-
-        /// Write a self-contained HTML report to this path when the run ends.
-        #[arg(long)]
-        report: Option<PathBuf>,
+    /// Diff two JSON run artifacts (baseline → candidate).
+    Compare {
+        /// Baseline run (`gust run … --json`).
+        baseline: PathBuf,
+        /// Candidate / after run.
+        candidate: PathBuf,
     },
+
+    /// Rebuild an HTML report from a saved JSON artifact.
+    Report {
+        /// JSON produced by `gust run --json`.
+        json: PathBuf,
+        /// HTML output path.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Args)]
+struct RunArgs {
+    /// Target URL (required unless `--scenario` is set).
+    #[arg(required_unless_present = "scenario")]
+    url: Option<String>,
+
+    /// TOML scenario file (sequence or weighted steps).
+    #[arg(long)]
+    scenario: Option<PathBuf>,
+
+    /// HTTP method for single-URL runs (default GET).
+    #[arg(long, default_value = "GET")]
+    method: String,
+
+    /// Extra header `Name: value` (repeatable) for single-URL runs.
+    #[arg(long = "header", value_name = "NAME: VALUE")]
+    headers: Vec<String>,
+
+    /// Request body for single-URL runs (e.g. JSON).
+    #[arg(long)]
+    body: Option<String>,
+
+    /// `Authorization: Bearer <token>` (single-URL; also fills scenario auth if unset).
+    #[arg(long = "bearer", value_name = "TOKEN")]
+    bearer: Option<String>,
+
+    /// HTTP Basic auth as `user:password` (single-URL; also fills scenario auth if unset).
+    #[arg(long = "basic-auth", value_name = "USER:PASSWORD")]
+    basic_auth: Option<String>,
+
+    /// Seed cookie `name=value` (repeatable).
+    #[arg(long = "cookie", value_name = "NAME=VALUE")]
+    cookies: Vec<String>,
+
+    /// Persist `Set-Cookie` across requests (needed for login → API journeys).
+    #[arg(long)]
+    cookie_jar: bool,
+
+    /// Load profile: constant RPS or linear ramp.
+    #[arg(long, value_enum, default_value_t = ProfileKind::Constant)]
+    profile: ProfileKind,
+
+    /// Requests (or journeys) per second — constant profile.
+    #[arg(short, long, default_value_t = 50)]
+    rate: u64,
+
+    /// Ramp start RPS (`--profile ramp`).
+    #[arg(long)]
+    from: Option<f64>,
+
+    /// Ramp end RPS (`--profile ramp`).
+    #[arg(long)]
+    to: Option<f64>,
+
+    /// How long to run, in seconds.
+    #[arg(short, long, default_value_t = 10)]
+    duration: u64,
+
+    /// Per-request timeout, in seconds.
+    #[arg(short, long, default_value_t = 5)]
+    timeout: u64,
+
+    /// Print a plain summary instead of the live dashboard.
+    #[arg(long)]
+    no_ui: bool,
+
+    /// Write a self-contained HTML report to this path when the run ends.
+    #[arg(long)]
+    report: Option<PathBuf>,
+
+    /// Write a JSON run artifact (for `gust compare` / `gust report`).
+    #[arg(long)]
+    json: Option<PathBuf>,
+
+    /// Fail if corrected p99 exceeds this many milliseconds.
+    #[arg(long = "max-p99-ms")]
+    max_p99_ms: Option<f64>,
+
+    /// Fail if failure/total exceeds this fraction (0.0–1.0).
+    #[arg(long = "max-error-rate")]
+    max_error_rate: Option<f64>,
+
+    /// Fail if success/total is below this fraction (0.0–1.0).
+    #[arg(long = "min-success-rate")]
+    min_success_rate: Option<f64>,
+
+    /// Fail if the detected knee is below this RPS (also fails when no knee).
+    #[arg(long = "min-knee-rps")]
+    min_knee_rps: Option<f64>,
+
+    /// Fail when no knee is detected.
+    #[arg(long)]
+    require_knee: bool,
+
+    /// p99 latency budget (ms). Gust reports the max req/s that holds under it.
+    #[arg(long = "slo-p99-ms")]
+    slo_p99_ms: Option<f64>,
 }
 
 /// What each open-model arrival executes.
@@ -165,31 +214,146 @@ pub struct RunInfo {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run {
-            url,
-            scenario,
-            method,
-            headers,
-            body,
-            bearer,
-            basic_auth,
-            cookies,
-            cookie_jar,
-            profile,
-            rate,
-            from,
-            to,
-            duration,
-            timeout,
-            no_ui,
-            report,
-        } => {
-            let cli_auth = CliAuth::from_args(bearer, basic_auth, cookies, cookie_jar)?;
-            let (target, shared) = build_target(url, scenario, method, headers, body, &cli_auth)?;
-            let load = build_profile(profile, rate, from, to, duration)?;
-            run(target, shared, load, timeout, no_ui, report).await
+        Command::Run(args) => {
+            let args = *args;
+            let cli_auth =
+                CliAuth::from_args(args.bearer, args.basic_auth, args.cookies, args.cookie_jar)?;
+            let (target, shared) = build_target(
+                args.url,
+                args.scenario,
+                args.method,
+                args.headers,
+                args.body,
+                &cli_auth,
+            )?;
+            let load = build_profile(args.profile, args.rate, args.from, args.to, args.duration)?;
+            let thresholds = Thresholds {
+                max_corrected_p99_ms: args.max_p99_ms,
+                max_error_rate: args.max_error_rate,
+                min_success_rate: args.min_success_rate,
+                min_knee_rps: args.min_knee_rps,
+                require_knee: args.require_knee,
+            };
+            validate_thresholds(&thresholds)?;
+            if let Some(v) = args.slo_p99_ms
+                && v <= 0.0
+            {
+                bail!("--slo-p99-ms must be > 0");
+            }
+            run(RunRequest {
+                target,
+                shared,
+                profile: load,
+                timeout_secs: args.timeout,
+                no_ui: args.no_ui,
+                report_path: args.report,
+                json_path: args.json,
+                thresholds,
+                slo_p99_ms: args.slo_p99_ms,
+            })
+            .await
         }
+        Command::Compare {
+            baseline,
+            candidate,
+        } => cmd_compare(&baseline, &candidate),
+        Command::Report { json, output } => cmd_report(&json, &output),
     }
+}
+
+fn validate_thresholds(t: &Thresholds) -> Result<()> {
+    if let Some(v) = t.max_error_rate
+        && !(0.0..=1.0).contains(&v)
+    {
+        bail!("--max-error-rate must be between 0.0 and 1.0");
+    }
+    if let Some(v) = t.min_success_rate
+        && !(0.0..=1.0).contains(&v)
+    {
+        bail!("--min-success-rate must be between 0.0 and 1.0");
+    }
+    if let Some(v) = t.max_corrected_p99_ms
+        && v < 0.0
+    {
+        bail!("--max-p99-ms must be >= 0");
+    }
+    if let Some(v) = t.min_knee_rps
+        && v < 0.0
+    {
+        bail!("--min-knee-rps must be >= 0");
+    }
+    Ok(())
+}
+
+fn cmd_compare(baseline_path: &Path, candidate_path: &Path) -> Result<()> {
+    let baseline = report::load_json(baseline_path)?;
+    let candidate = report::load_json(candidate_path)?;
+    let base_m = RunMetrics::from_run(
+        &baseline.summary,
+        baseline.knee.as_ref(),
+        baseline.slo.as_ref(),
+    );
+    let cand_m = RunMetrics::from_run(
+        &candidate.summary,
+        candidate.knee.as_ref(),
+        candidate.slo.as_ref(),
+    );
+    let result = compare_runs(&base_m, &cand_m);
+
+    println!("gust compare");
+    println!(
+        "  baseline:  {} ({})",
+        baseline_path.display(),
+        baseline.started_at
+    );
+    println!(
+        "  candidate: {} ({})",
+        candidate_path.display(),
+        candidate.started_at
+    );
+    println!();
+    print_metric(&result.p99);
+    print_metric(&result.error_rate);
+    if let Some(k) = &result.knee {
+        print_metric(k);
+    } else {
+        println!("  knee (req/s)          — (missing on one or both runs)");
+    }
+    if let Some(slo) = &result.slo {
+        print_metric(slo);
+    }
+    println!();
+    let label = match result.verdict {
+        gust_core::Verdict::Improved => "IMPROVED",
+        gust_core::Verdict::Equivalent => "EQUIVALENT",
+        gust_core::Verdict::Mixed => "MIXED",
+        gust_core::Verdict::Regressed => "REGRESSED",
+    };
+    println!("  verdict: {label}");
+
+    if result.verdict.is_failure() {
+        bail!("candidate regressed vs baseline (verdict: {label})");
+    }
+    Ok(())
+}
+
+fn print_metric(m: &gust_core::MetricChange) {
+    let arrow = match m.direction {
+        gust_core::Direction::Improved => "improved",
+        gust_core::Direction::Regressed => "regressed",
+        gust_core::Direction::Equivalent => "equivalent",
+    };
+    println!(
+        "  {:<22} {:>10.3} → {:>10.3}  ({arrow}, Δ {:+.3})",
+        m.name, m.baseline, m.candidate, m.delta
+    );
+}
+
+fn cmd_report(json_path: &Path, output: &Path) -> Result<()> {
+    let run = report::load_json(json_path)?;
+    report::write_html(output, &run)?;
+    println!("report: {}", output.display());
+    Ok(())
 }
 
 fn build_target(
@@ -456,14 +620,30 @@ fn build_profile(
     }
 }
 
-async fn run(
+struct RunRequest {
     target: Target,
     shared: SharedAuth,
     profile: LoadProfile,
     timeout_secs: u64,
     no_ui: bool,
     report_path: Option<PathBuf>,
-) -> Result<()> {
+    json_path: Option<PathBuf>,
+    thresholds: Thresholds,
+    slo_p99_ms: Option<f64>,
+}
+
+async fn run(req: RunRequest) -> Result<()> {
+    let RunRequest {
+        target,
+        shared,
+        profile,
+        timeout_secs,
+        no_ui,
+        report_path,
+        json_path,
+        thresholds,
+        slo_p99_ms,
+    } = req;
     let total_duration = profile.duration();
     let duration_secs = total_duration.as_secs().max(1);
 
@@ -553,23 +733,46 @@ async fn run(
 
     if let Some(summary) = final_summary {
         let sent_n = sent.load(Ordering::Relaxed);
+        let dead_target = summary.total > 0 && summary.success == 0;
+        let slo = slo_p99_ms
+            .filter(|_| !dead_target)
+            .and_then(|budget| gust_core::slo_capacity(&windows, budget));
         print_summary(sent_n, &summary, &steps, knee.as_ref());
+        print_slo(slo.as_ref());
+
+        let run_report = RunReport {
+            schema_version: SCHEMA_VERSION,
+            url: info.url.clone(),
+            profile: info.profile_label.clone(),
+            duration_secs: info.duration,
+            sent: sent_n,
+            started_at,
+            summary,
+            steps,
+            windows,
+            knee: knee.clone(),
+            slo: slo.clone(),
+            failure_reason: first_failure().map(str::to_owned),
+        };
 
         if let Some(path) = report_path {
-            let report = RunReport {
-                url: info.url.clone(),
-                profile: info.profile_label.clone(),
-                duration_secs: info.duration,
-                sent: sent_n,
-                started_at,
-                summary,
-                steps,
-                windows,
-                knee: knee.clone(),
-                failure_reason: first_failure().map(str::to_owned),
-            };
-            report::write_html(&path, &report)?;
+            report::write_html(&path, &run_report)?;
             println!("  report:    {}", path.display());
+        }
+        if let Some(path) = json_path {
+            report::write_json(&path, &run_report)?;
+            println!("  json:      {}", path.display());
+        }
+
+        let metrics = RunMetrics::from_run(&summary, knee.as_ref(), slo.as_ref());
+        let violations = check_thresholds(&metrics, &thresholds);
+        if !violations.is_empty() {
+            println!();
+            println!("  thresholds:");
+            for v in &violations {
+                println!("    ✗ {}", v.detail);
+            }
+            bail!("{} performance threshold(s) failed", violations.len());
         }
     }
     Ok(())
@@ -1016,6 +1219,29 @@ fn print_summary(sent: u64, s: &Summary, steps: &[StepSummary], knee: Option<&Kn
     }
     println!("  'corrected' accounts for coordinated omission — the gap is the");
     println!("  latency your users feel that a naive tester would hide.");
+}
+
+fn print_slo(slo: Option<&SloCapacity>) {
+    let Some(slo) = slo else {
+        return;
+    };
+    println!();
+    if slo.sustainable_rps <= 0.0 {
+        println!(
+            "  SLO:       p99 ≤ {:.0}ms was not met at any tested load",
+            slo.slo_p99_ms
+        );
+    } else if slo.breached {
+        println!(
+            "  SLO:       p99 ≤ {:.0}ms sustains ≈ {:.0} req/s ({:.0} served) at t={:.1}s",
+            slo.slo_p99_ms, slo.sustainable_rps, slo.sustainable_throughput, slo.t
+        );
+    } else {
+        println!(
+            "  SLO:       p99 ≤ {:.0}ms held through ≈ {:.0} req/s (never breached — raise the load to find the ceiling)",
+            slo.slo_p99_ms, slo.sustainable_rps
+        );
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {

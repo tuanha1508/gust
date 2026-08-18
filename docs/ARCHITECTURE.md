@@ -50,6 +50,8 @@
 | `LoadProfile` | Constant / Ramp → `rate_at(elapsed)` |
 | `WindowMetric` | per-window rate, thr, p50/p90/p99, error_rate, in_flight |
 | `Knee` | detected break + recommended safe RPS |
+| `SloCapacity` | max sustainable RPS under a p99 budget |
+| `RunMetrics` / `CompareReport` | compare inputs + per-metric verdict |
 | `Scenario` / `Step` | TOML journey or weighted mix (pure data) |
 
 ### Coordinated omission
@@ -73,9 +75,9 @@ When `None`: corrected == raw (closed-model / no planned rate).
 
 | File | Role |
 | --- | --- |
-| `main.rs` | clap, profile, generator, recorder_loop, summary printer |
+| `main.rs` | clap, profile, generator, recorder_loop, summary, compare, thresholds |
 | `ui.rs` | ratatui: header, knee banner, stats, percentile table, latency chart |
-| `report.rs` | self-contained HTML report emitter |
+| `report.rs` | HTML emitter + JSON artifact load/save |
 
 ## Shared UI state
 
@@ -124,7 +126,22 @@ Modules:
 - `gust-core/src/knee.rs` — detection algorithm + tests
 - `gust-core/src/scenario.rs` — scenario / step types + weighted pick
 - `gust-core/src/steps.rs` — `MultiRecorder` overall + per-step histograms
-- `gust-cli/src/report.rs` — HTML emitter
+- `gust-core/src/compare.rs` — run metrics, compare verdict, CI thresholds
+- `gust-core/src/slo.rs` — SLO-driven capacity over the window series
+- `gust-cli/src/report.rs` — HTML + JSON artifacts
+
+### Compare / CI notes
+
+- `--json` writes the same `RunReport` shape embedded in HTML (`schema_version`).
+- `gust compare` loads two artifacts, builds `RunMetrics`, calls `compare()`.
+- Threshold flags on `gust run` call `check_thresholds()` after the summary.
+
+### SLO capacity notes
+
+- `--slo-p99-ms` computes `slo_capacity(&windows, budget)`: the highest offered
+  `target_rps` whose window held p99 ≤ budget before a sustained breach.
+- Pure function over `WindowMetric[]`, mirroring `knee::detect`; result is stored
+  in the artifact and compared as a metric (higher is better, same budget only).
 
 ### P3 notes
 

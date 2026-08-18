@@ -1,6 +1,6 @@
 # Gust — Status
 
-Last updated: **2026-08-17**
+Last updated: **2026-08-19**
 
 ## Done
 
@@ -34,6 +34,28 @@ Last updated: **2026-08-17**
 - Examples: `examples/demo-api.js`, `examples/demo-mix.toml`, `examples/journey.toml`
 - Open model still schedules arrivals; each arrival runs a journey or one weighted step
 
+### Compare / CI — regression-aware runs
+
+- `--json` writes a schema-versioned run artifact (same payload as the HTML embed)
+- `gust compare baseline.json candidate.json` — corrected p99, error rate, knee;
+  verdict `IMPROVED` / `EQUIVALENT` / `MIXED` / `REGRESSED` (non-zero on MIXED/REGRESSED)
+- `gust report <run.json> -o out.html` rebuilds HTML without re-running
+- CI gates on `gust run`: `--max-p99-ms`, `--max-error-rate`, `--min-success-rate`,
+  `--min-knee-rps`, `--require-knee`
+- Pure logic in `gust-core::compare` (unit-tested)
+- Dogfood case study: [`CASE-STUDY.md`](CASE-STUDY.md) (demo-api pool 4 → 8,
+  knee ~407 → ~809 req/s, verdict IMPROVED)
+
+### SLO-driven capacity — the number planners ask for
+
+- `--slo-p99-ms <ms>`: reports the **max offered load that holds p99 under the
+  budget** (sustainable req/s + throughput served), before a *sustained* breach
+- Pure `gust-core::slo_capacity` over the window series (unit-tested, 6 cases:
+  ramp read, tighter/looser budget, single-spike robustness, error disqualify,
+  too-short)
+- Surfaced in CLI summary, HTML banner, JSON artifact; flows into `gust compare`
+  as an `SLO capacity (req/s)` row when both runs used the same budget
+- Dogfood: pool 4 → 8 lifted SLO(p99≤50ms) capacity ~427 → ~840 req/s
 ## Verified working
 
 ```bash
@@ -87,7 +109,8 @@ TUI requires a real interactive terminal (not verified in headless agent shell).
    contaminated start reported ~1380.
 5. ~~**`corrected` min below `raw` min**~~ — corrected min is now shown as `—`.
 6. **Steps profile** — optional ramp variant; not implemented.
-7. **`gust report <run.json>`** — HTML written from live run only.
+7. ~~**`gust report <run.json>`**~~ — `gust report <run.json> -o out.html`
+   rebuilds HTML from a saved `--json` artifact.
 8. ~~**No cookie jar / auth helpers**~~ — `--bearer`, `--basic-auth`,
    `--cookie`, `--cookie-jar`, plus scenario `[auth]` / `[cookies]` /
    `cookie_jar`. Demo: `POST /login` + `GET /api/me`, `examples/auth-journey.toml`.
@@ -96,15 +119,16 @@ TUI requires a real interactive terminal (not verified in headless agent shell).
    publish` under that name. Binary stays `gust`; if we publish later, pick a
    distinct package name (e.g. `gust-load`) without renaming the CLI.
 
-## Next tasks (P4) — only if needed
+## Next tasks
 
-Distributed generators + correct HDR merge. Do **not** start until single-node Gust has real users.
+Polish / distribution, in rough value order:
+1. **GitHub Releases** binary (macOS/Linux) so recruiters can try without Rust
+2. Short demo GIF/video of the TUI + compare loop
+3. Optional connection-pool wait metrics from reqwest (if exposed)
+4. Steps / hold profile if dogfooding wants it
+5. Publish under a free crates.io name if/when distribution matters
 
-Polish first, in rough value order:
-1. Optional connection-pool wait metrics from reqwest (if exposed)
-2. Steps / hold profile if dogfooding wants it
-3. Publish under a free crates.io name if/when distribution matters
-
+Distributed generators (old P4) — only if one machine is not enough.
 ## Intentionally not started
 
 - Kafka / Redis / distributed workers

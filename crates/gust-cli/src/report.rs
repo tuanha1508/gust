@@ -1,14 +1,23 @@
-//! Self-contained HTML report for a finished Gust run.
+//! Self-contained HTML report + JSON run artifacts for a finished Gust run.
 
 use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use gust_core::{Knee, StepSummary, Summary, WindowMetric};
-use serde::Serialize;
+use gust_core::{Knee, SloCapacity, StepSummary, Summary, WindowMetric};
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+/// Bump when the on-disk JSON shape changes in a breaking way.
+pub const SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunReport {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub url: String,
     pub profile: String,
     pub duration_secs: u64,
@@ -18,19 +27,41 @@ pub struct RunReport {
     pub steps: Vec<StepSummary>,
     pub windows: Vec<WindowMetric>,
     pub knee: Option<Knee>,
+    /// SLO-driven capacity, present when the run was given a `--slo-p99-ms`.
+    #[serde(default)]
+    pub slo: Option<SloCapacity>,
     /// Why the first failed request failed, if any did.
     pub failure_reason: Option<String>,
 }
 
 pub fn write_html(path: &Path, report: &RunReport) -> Result<()> {
+    ensure_parent(path)?;
+    let html = render(report);
+    fs::write(path, html).with_context(|| format!("write report {}", path.display()))?;
+    Ok(())
+}
+
+pub fn write_json(path: &Path, report: &RunReport) -> Result<()> {
+    ensure_parent(path)?;
+    let json = serde_json::to_string_pretty(report).context("serialize run JSON")?;
+    fs::write(path, json).with_context(|| format!("write JSON {}", path.display()))?;
+    Ok(())
+}
+
+pub fn load_json(path: &Path) -> Result<RunReport> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let report: RunReport =
+        serde_json::from_str(&raw).with_context(|| format!("parse JSON {}", path.display()))?;
+    Ok(report)
+}
+
+fn ensure_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)
             .with_context(|| format!("create report dir {}", parent.display()))?;
     }
-    let html = render(report);
-    fs::write(path, html).with_context(|| format!("write report {}", path.display()))?;
     Ok(())
 }
 
@@ -59,6 +90,27 @@ fn render(r: &RunReport) -> String {
             ),
             None => "<div class=\"knee none\">No clear knee detected in this run.</div>".into(),
         }
+    };
+
+    let slo_banner = match (&r.slo, dead_target) {
+        (Some(slo), false) if slo.sustainable_rps > 0.0 => format!(
+            "<div class=\"slo\">SLO p99 ≤ <strong>{:.0} ms</strong> → sustains \
+             <strong>{:.0} req/s</strong> ({:.0} served){}</div>",
+            slo.slo_p99_ms,
+            slo.sustainable_rps,
+            slo.sustainable_throughput,
+            if slo.breached {
+                ""
+            } else {
+                " <span class=\"muted\">(SLO never breached — top rate reached)</span>"
+            }
+        ),
+        (Some(slo), false) => format!(
+            "<div class=\"slo miss\">SLO p99 ≤ <strong>{:.0} ms</strong> \
+             was not met at any load</div>",
+            slo.slo_p99_ms
+        ),
+        _ => String::new(),
     };
 
     let s = &r.summary;
@@ -111,6 +163,11 @@ fn render(r: &RunReport) -> String {
   }}
   .knee.none {{ border-color: var(--border); color: var(--muted); }}
   .knee.dead {{ background: #2c2126; border-color: var(--red); }}
+  .slo {{
+    background: #1e2b2b; border: 1px solid var(--green);
+    border-radius: 8px; padding: 0.85rem 1.25rem; margin-bottom: 1rem;
+  }}
+  .slo.miss {{ background: #2c2126; border-color: var(--yellow); }}
   .muted {{ color: var(--muted); font-size: 0.9rem; }}
   table {{ width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }}
   th, td {{ text-align: right; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }}
@@ -127,6 +184,7 @@ fn render(r: &RunReport) -> String {
   <h1><span>gust</span> report</h1>
   <div class="sub">{url} · {profile} · {duration}s · {started} · {sent} arrivals</div>
   {knee_banner}
+  {slo_banner}
   <div class="grid">
     <div class="panel">
       <strong>Outcomes</strong>
@@ -235,6 +293,7 @@ fn render(r: &RunReport) -> String {
         started = escape(&r.started_at),
         sent = r.sent,
         knee_banner = knee_banner,
+        slo_banner = slo_banner,
         total = s.total,
         success = s.success,
         failure = s.failure,
