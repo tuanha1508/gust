@@ -17,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gust_core::{
     Knee, LoadProfile, MultiRecorder, Outcome, RunMetrics, Scenario, ScenarioAuth, ScenarioMode,
-    Step, StepSummary, Summary, Thresholds, WindowMetric, check_thresholds,
+    SloCapacity, Step, StepSummary, Summary, Thresholds, WindowMetric, check_thresholds,
     compare as compare_runs, detect_knee,
 };
 use reqwest::Method;
@@ -156,6 +156,10 @@ struct RunArgs {
     /// Fail when no knee is detected.
     #[arg(long)]
     require_knee: bool,
+
+    /// p99 latency budget (ms). Gust reports the max req/s that holds under it.
+    #[arg(long = "slo-p99-ms")]
+    slo_p99_ms: Option<f64>,
 }
 
 /// What each open-model arrival executes.
@@ -231,6 +235,11 @@ async fn main() -> Result<()> {
                 require_knee: args.require_knee,
             };
             validate_thresholds(&thresholds)?;
+            if let Some(v) = args.slo_p99_ms
+                && v <= 0.0
+            {
+                bail!("--slo-p99-ms must be > 0");
+            }
             run(RunRequest {
                 target,
                 shared,
@@ -240,6 +249,7 @@ async fn main() -> Result<()> {
                 report_path: args.report,
                 json_path: args.json,
                 thresholds,
+                slo_p99_ms: args.slo_p99_ms,
             })
             .await
         }
@@ -278,8 +288,16 @@ fn validate_thresholds(t: &Thresholds) -> Result<()> {
 fn cmd_compare(baseline_path: &Path, candidate_path: &Path) -> Result<()> {
     let baseline = report::load_json(baseline_path)?;
     let candidate = report::load_json(candidate_path)?;
-    let base_m = RunMetrics::from_summary(&baseline.summary, baseline.knee.as_ref());
-    let cand_m = RunMetrics::from_summary(&candidate.summary, candidate.knee.as_ref());
+    let base_m = RunMetrics::from_run(
+        &baseline.summary,
+        baseline.knee.as_ref(),
+        baseline.slo.as_ref(),
+    );
+    let cand_m = RunMetrics::from_run(
+        &candidate.summary,
+        candidate.knee.as_ref(),
+        candidate.slo.as_ref(),
+    );
     let result = compare_runs(&base_m, &cand_m);
 
     println!("gust compare");
@@ -300,6 +318,9 @@ fn cmd_compare(baseline_path: &Path, candidate_path: &Path) -> Result<()> {
         print_metric(k);
     } else {
         println!("  knee (req/s)          — (missing on one or both runs)");
+    }
+    if let Some(slo) = &result.slo {
+        print_metric(slo);
     }
     println!();
     let label = match result.verdict {
@@ -608,6 +629,7 @@ struct RunRequest {
     report_path: Option<PathBuf>,
     json_path: Option<PathBuf>,
     thresholds: Thresholds,
+    slo_p99_ms: Option<f64>,
 }
 
 async fn run(req: RunRequest) -> Result<()> {
@@ -620,6 +642,7 @@ async fn run(req: RunRequest) -> Result<()> {
         report_path,
         json_path,
         thresholds,
+        slo_p99_ms,
     } = req;
     let total_duration = profile.duration();
     let duration_secs = total_duration.as_secs().max(1);
@@ -710,7 +733,12 @@ async fn run(req: RunRequest) -> Result<()> {
 
     if let Some(summary) = final_summary {
         let sent_n = sent.load(Ordering::Relaxed);
+        let dead_target = summary.total > 0 && summary.success == 0;
+        let slo = slo_p99_ms
+            .filter(|_| !dead_target)
+            .and_then(|budget| gust_core::slo_capacity(&windows, budget));
         print_summary(sent_n, &summary, &steps, knee.as_ref());
+        print_slo(slo.as_ref());
 
         let run_report = RunReport {
             schema_version: SCHEMA_VERSION,
@@ -723,6 +751,7 @@ async fn run(req: RunRequest) -> Result<()> {
             steps,
             windows,
             knee: knee.clone(),
+            slo: slo.clone(),
             failure_reason: first_failure().map(str::to_owned),
         };
 
@@ -735,7 +764,7 @@ async fn run(req: RunRequest) -> Result<()> {
             println!("  json:      {}", path.display());
         }
 
-        let metrics = RunMetrics::from_summary(&summary, knee.as_ref());
+        let metrics = RunMetrics::from_run(&summary, knee.as_ref(), slo.as_ref());
         let violations = check_thresholds(&metrics, &thresholds);
         if !violations.is_empty() {
             println!();
@@ -1190,6 +1219,29 @@ fn print_summary(sent: u64, s: &Summary, steps: &[StepSummary], knee: Option<&Kn
     }
     println!("  'corrected' accounts for coordinated omission — the gap is the");
     println!("  latency your users feel that a naive tester would hide.");
+}
+
+fn print_slo(slo: Option<&SloCapacity>) {
+    let Some(slo) = slo else {
+        return;
+    };
+    println!();
+    if slo.sustainable_rps <= 0.0 {
+        println!(
+            "  SLO:       p99 ≤ {:.0}ms was not met at any tested load",
+            slo.slo_p99_ms
+        );
+    } else if slo.breached {
+        println!(
+            "  SLO:       p99 ≤ {:.0}ms sustains ≈ {:.0} req/s ({:.0} served) at t={:.1}s",
+            slo.slo_p99_ms, slo.sustainable_rps, slo.sustainable_throughput, slo.t
+        );
+    } else {
+        println!(
+            "  SLO:       p99 ≤ {:.0}ms held through ≈ {:.0} req/s (never breached — raise the load to find the ceiling)",
+            slo.slo_p99_ms, slo.sustainable_rps
+        );
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {

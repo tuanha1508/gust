@@ -13,6 +13,7 @@ mod compare;
 mod knee;
 mod profile;
 mod scenario;
+mod slo;
 mod steps;
 
 pub use compare::{
@@ -22,6 +23,7 @@ pub use compare::{
 pub use knee::{Knee, SAFE_FACTOR, WindowMetric, detect as detect_knee};
 pub use profile::LoadProfile;
 pub use scenario::{Scenario, ScenarioAuth, ScenarioMode, Step};
+pub use slo::{SloCapacity, capacity as slo_capacity};
 pub use steps::{MultiRecorder, RunBreakdown, StepSummary};
 
 use std::time::Duration;

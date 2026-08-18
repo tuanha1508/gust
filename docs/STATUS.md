@@ -45,6 +45,17 @@ Last updated: **2026-08-19**
 - Pure logic in `gust-core::compare` (unit-tested)
 - Dogfood case study: [`CASE-STUDY.md`](CASE-STUDY.md) (demo-api pool 4 → 8,
   knee ~407 → ~809 req/s, verdict IMPROVED)
+
+### SLO-driven capacity — the number planners ask for
+
+- `--slo-p99-ms <ms>`: reports the **max offered load that holds p99 under the
+  budget** (sustainable req/s + throughput served), before a *sustained* breach
+- Pure `gust-core::slo_capacity` over the window series (unit-tested, 6 cases:
+  ramp read, tighter/looser budget, single-spike robustness, error disqualify,
+  too-short)
+- Surfaced in CLI summary, HTML banner, JSON artifact; flows into `gust compare`
+  as an `SLO capacity (req/s)` row when both runs used the same budget
+- Dogfood: pool 4 → 8 lifted SLO(p99≤50ms) capacity ~427 → ~840 req/s
 ## Verified working
 
 ```bash

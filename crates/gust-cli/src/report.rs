@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use gust_core::{Knee, StepSummary, Summary, WindowMetric};
+use gust_core::{Knee, SloCapacity, StepSummary, Summary, WindowMetric};
 use serde::{Deserialize, Serialize};
 
 /// Bump when the on-disk JSON shape changes in a breaking way.
@@ -27,6 +27,9 @@ pub struct RunReport {
     pub steps: Vec<StepSummary>,
     pub windows: Vec<WindowMetric>,
     pub knee: Option<Knee>,
+    /// SLO-driven capacity, present when the run was given a `--slo-p99-ms`.
+    #[serde(default)]
+    pub slo: Option<SloCapacity>,
     /// Why the first failed request failed, if any did.
     pub failure_reason: Option<String>,
 }
@@ -89,6 +92,27 @@ fn render(r: &RunReport) -> String {
         }
     };
 
+    let slo_banner = match (&r.slo, dead_target) {
+        (Some(slo), false) if slo.sustainable_rps > 0.0 => format!(
+            "<div class=\"slo\">SLO p99 ≤ <strong>{:.0} ms</strong> → sustains \
+             <strong>{:.0} req/s</strong> ({:.0} served){}</div>",
+            slo.slo_p99_ms,
+            slo.sustainable_rps,
+            slo.sustainable_throughput,
+            if slo.breached {
+                ""
+            } else {
+                " <span class=\"muted\">(SLO never breached — top rate reached)</span>"
+            }
+        ),
+        (Some(slo), false) => format!(
+            "<div class=\"slo miss\">SLO p99 ≤ <strong>{:.0} ms</strong> \
+             was not met at any load</div>",
+            slo.slo_p99_ms
+        ),
+        _ => String::new(),
+    };
+
     let s = &r.summary;
     let pct = |n: u64| {
         if s.total == 0 {
@@ -139,6 +163,11 @@ fn render(r: &RunReport) -> String {
   }}
   .knee.none {{ border-color: var(--border); color: var(--muted); }}
   .knee.dead {{ background: #2c2126; border-color: var(--red); }}
+  .slo {{
+    background: #1e2b2b; border: 1px solid var(--green);
+    border-radius: 8px; padding: 0.85rem 1.25rem; margin-bottom: 1rem;
+  }}
+  .slo.miss {{ background: #2c2126; border-color: var(--yellow); }}
   .muted {{ color: var(--muted); font-size: 0.9rem; }}
   table {{ width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }}
   th, td {{ text-align: right; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }}
@@ -155,6 +184,7 @@ fn render(r: &RunReport) -> String {
   <h1><span>gust</span> report</h1>
   <div class="sub">{url} · {profile} · {duration}s · {started} · {sent} arrivals</div>
   {knee_banner}
+  {slo_banner}
   <div class="grid">
     <div class="panel">
       <strong>Outcomes</strong>
@@ -263,6 +293,7 @@ fn render(r: &RunReport) -> String {
         started = escape(&r.started_at),
         sent = r.sent,
         knee_banner = knee_banner,
+        slo_banner = slo_banner,
         total = s.total,
         success = s.success,
         failure = s.failure,

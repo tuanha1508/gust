@@ -3,7 +3,7 @@
 //! These are the recruiter-facing product primitives: save a baseline, change
 //! the system, prove the capacity / latency story with numbers — not vibes.
 
-use crate::{Knee, Summary};
+use crate::{Knee, SloCapacity, Summary};
 
 /// Metrics extracted from a finished run for comparison / gates.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,11 +15,18 @@ pub struct RunMetrics {
     pub error_rate: f64,
     pub knee_rps: Option<f64>,
     pub recommended_rps: Option<f64>,
+    /// SLO-sustainable load and the budget it was measured against.
+    pub slo_rps: Option<f64>,
+    pub slo_p99_ms: Option<f64>,
     pub total: u64,
 }
 
 impl RunMetrics {
     pub fn from_summary(summary: &Summary, knee: Option<&Knee>) -> Self {
+        Self::from_run(summary, knee, None)
+    }
+
+    pub fn from_run(summary: &Summary, knee: Option<&Knee>, slo: Option<&SloCapacity>) -> Self {
         let total = summary.total;
         let (success_rate, error_rate) = if total == 0 {
             (0.0, 0.0)
@@ -35,6 +42,8 @@ impl RunMetrics {
             error_rate,
             knee_rps: knee.map(|k| k.target_rps),
             recommended_rps: knee.map(|k| k.recommended_rps),
+            slo_rps: slo.map(|s| s.sustainable_rps),
+            slo_p99_ms: slo.map(|s| s.slo_p99_ms),
             total,
         }
     }
@@ -85,6 +94,8 @@ pub struct CompareReport {
     pub p99: MetricChange,
     pub error_rate: MetricChange,
     pub knee: Option<MetricChange>,
+    /// SLO-sustainable RPS delta, when both runs used the *same* p99 budget.
+    pub slo: Option<MetricChange>,
     pub verdict: Verdict,
 }
 
@@ -129,9 +140,28 @@ pub fn compare(baseline: &RunMetrics, candidate: &RunMetrics) -> CompareReport {
         _ => None,
     };
 
+    // Only compare SLO capacity when both runs measured the same budget.
+    let slo = match (
+        baseline.slo_rps,
+        candidate.slo_rps,
+        baseline.slo_p99_ms,
+        candidate.slo_p99_ms,
+    ) {
+        (Some(b), Some(c), Some(bp), Some(cp)) if (bp - cp).abs() < 1e-6 => Some(change(
+            "SLO capacity (req/s)",
+            b,
+            c,
+            /*lower_is_better*/ false,
+            KNEE_REL,
+            KNEE_ABS_RPS,
+        )),
+        _ => None,
+    };
+
     let directions: Vec<Direction> = std::iter::once(p99.direction)
         .chain(std::iter::once(error_rate.direction))
         .chain(knee.as_ref().map(|k| k.direction))
+        .chain(slo.as_ref().map(|k| k.direction))
         .collect();
 
     let improved = directions.contains(&Direction::Improved);
@@ -148,6 +178,7 @@ pub fn compare(baseline: &RunMetrics, candidate: &RunMetrics) -> CompareReport {
         p99,
         error_rate,
         knee,
+        slo,
         verdict,
     }
 }

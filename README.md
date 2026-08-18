@@ -78,6 +78,29 @@ cargo run --release -p gust -- run --scenario examples/auth-journey.toml \
   --cookie-jar --rate 20 --duration 5 --no-ui
 ```
 
+### Answer the capacity question: "how much load fits my SLO?"
+
+Most load testers hand you percentiles and let you eyeball a chart. Gust turns a
+p99 budget into the number you actually provision for — the **max req/s that
+holds under your SLO**:
+
+```bash
+cargo run --release -p gust -- run http://127.0.0.1:8080/ \
+  --profile ramp --from 100 --to 1200 --duration 20 --no-ui \
+  --slo-p99-ms 50
+```
+
+```
+  SLO:       p99 ≤ 50ms sustains ≈ 840 req/s (797 served) at t=13.5s
+```
+
+It appears in the summary, the HTML banner, and — because it is saved in the
+JSON artifact — in `gust compare`, so a capacity fix reads as a single line:
+
+```
+  SLO capacity (req/s)      427.068 →    839.965  (improved, Δ +412.897)
+```
+
 ### Save a run, gate CI, prove a fix
 
 ```bash

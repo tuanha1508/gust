@@ -51,6 +51,21 @@ cargo run --release -p gust -- compare /tmp/gust-baseline.json /tmp/gust-after.j
   verdict: IMPROVED
 ```
 
+### The number a capacity planner actually asks for
+
+Run the same ramps with a p99 budget (`--slo-p99-ms 50`) and Gust reports the
+**max load that stays under the SLO** — then compares it directly:
+
+```
+  SLO:       p99 ≤ 50ms sustains ≈ 427 req/s   (pool 4)
+  SLO:       p99 ≤ 50ms sustains ≈ 840 req/s   (pool 8)
+
+  SLO capacity (req/s)      427.068 →    839.965  (improved, Δ +412.897)
+```
+
+The knee says *where it breaks*; the SLO capacity says *how much you can safely
+provision given the latency you promised*. Doubling the pool nearly doubled it.
+
 Exit code **0** on improve / equivalent; **1** on regress or mixed — so the
 same command is usable as a PR gate after you save a baseline artifact.
 
