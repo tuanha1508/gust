@@ -9,11 +9,16 @@
 //! the system is at its worst. Gust corrects for this by knowing the rate at
 //! which requests were *supposed* to be sent.
 
+mod compare;
 mod knee;
 mod profile;
 mod scenario;
 mod steps;
 
+pub use compare::{
+    CompareReport, Direction, MetricChange, RunMetrics, ThresholdViolation, Thresholds, Verdict,
+    check_thresholds, compare,
+};
 pub use knee::{Knee, SAFE_FACTOR, WindowMetric, detect as detect_knee};
 pub use profile::LoadProfile;
 pub use scenario::{Scenario, ScenarioAuth, ScenarioMode, Step};

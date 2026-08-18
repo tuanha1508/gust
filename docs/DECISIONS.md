@@ -78,3 +78,14 @@ distinct package name (candidate: `gust-load`) and keep `[[bin]] name = "gust"`.
 **Why:** Spot-check before publish was already noted in D2; confirmed taken
 2026-08. Renaming the CLI would throw away the brand for no user benefit.
 
+## D12 — Regression artifacts over more protocols
+
+**Decision:** After P0–P3, prioritize JSON run artifacts, `gust compare`, and CI
+thresholds over new protocols (gRPC/WS) or distributed generators.
+
+**Why:** Recruiter / hiring-manager value is "I measured a system, fixed it, and
+proved the capacity change." Compare + gates make that loop crisp. Extra
+protocols broaden surface without sharpening the story; P4 stays need-driven.
+
+**See:** [`CASE-STUDY.md`](CASE-STUDY.md).
+

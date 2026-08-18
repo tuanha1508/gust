@@ -1,14 +1,23 @@
-//! Self-contained HTML report for a finished Gust run.
+//! Self-contained HTML report + JSON run artifacts for a finished Gust run.
 
 use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use gust_core::{Knee, StepSummary, Summary, WindowMetric};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+/// Bump when the on-disk JSON shape changes in a breaking way.
+pub const SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunReport {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub url: String,
     pub profile: String,
     pub duration_secs: u64,
@@ -23,14 +32,33 @@ pub struct RunReport {
 }
 
 pub fn write_html(path: &Path, report: &RunReport) -> Result<()> {
+    ensure_parent(path)?;
+    let html = render(report);
+    fs::write(path, html).with_context(|| format!("write report {}", path.display()))?;
+    Ok(())
+}
+
+pub fn write_json(path: &Path, report: &RunReport) -> Result<()> {
+    ensure_parent(path)?;
+    let json = serde_json::to_string_pretty(report).context("serialize run JSON")?;
+    fs::write(path, json).with_context(|| format!("write JSON {}", path.display()))?;
+    Ok(())
+}
+
+pub fn load_json(path: &Path) -> Result<RunReport> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let report: RunReport =
+        serde_json::from_str(&raw).with_context(|| format!("parse JSON {}", path.display()))?;
+    Ok(report)
+}
+
+fn ensure_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)
             .with_context(|| format!("create report dir {}", parent.display()))?;
     }
-    let html = render(report);
-    fs::write(path, html).with_context(|| format!("write report {}", path.display()))?;
     Ok(())
 }
 

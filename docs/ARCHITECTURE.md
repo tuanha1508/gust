@@ -73,9 +73,9 @@ When `None`: corrected == raw (closed-model / no planned rate).
 
 | File | Role |
 | --- | --- |
-| `main.rs` | clap, profile, generator, recorder_loop, summary printer |
+| `main.rs` | clap, profile, generator, recorder_loop, summary, compare, thresholds |
 | `ui.rs` | ratatui: header, knee banner, stats, percentile table, latency chart |
-| `report.rs` | self-contained HTML report emitter |
+| `report.rs` | HTML emitter + JSON artifact load/save |
 
 ## Shared UI state
 
@@ -124,7 +124,14 @@ Modules:
 - `gust-core/src/knee.rs` — detection algorithm + tests
 - `gust-core/src/scenario.rs` — scenario / step types + weighted pick
 - `gust-core/src/steps.rs` — `MultiRecorder` overall + per-step histograms
-- `gust-cli/src/report.rs` — HTML emitter
+- `gust-core/src/compare.rs` — run metrics, compare verdict, CI thresholds
+- `gust-cli/src/report.rs` — HTML + JSON artifacts
+
+### Compare / CI notes
+
+- `--json` writes the same `RunReport` shape embedded in HTML (`schema_version`).
+- `gust compare` loads two artifacts, builds `RunMetrics`, calls `compare()`.
+- Threshold flags on `gust run` call `check_thresholds()` after the summary.
 
 ### P3 notes
 

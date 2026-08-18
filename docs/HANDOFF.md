@@ -32,8 +32,9 @@ cargo run --release -p gust -- run http://localhost:8080/ --profile ramp --from 
 
 ## 4. Continue from here
 
-**P0–P3 are done.** Prefer dogfooding + polish (false knee on short runs, per-step
-breakdown) before P4. Only start distributed work if one machine is not enough.
+**P0–P3 + compare/CI are done.** Prefer dogfooding + distribution polish
+(GitHub Releases, demo GIF) before P4. Only start distributed work if one
+machine is not enough. Recruiter loop: [`CASE-STUDY.md`](CASE-STUDY.md).
 
 ## 5. Do not
 

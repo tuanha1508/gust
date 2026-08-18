@@ -77,6 +77,30 @@ cargo run --release -p gust -- run http://127.0.0.1:8080/api/me \
 cargo run --release -p gust -- run --scenario examples/auth-journey.toml \
   --cookie-jar --rate 20 --duration 5 --no-ui
 ```
+
+### Save a run, gate CI, prove a fix
+
+```bash
+# JSON artifact (plus optional HTML)
+cargo run --release -p gust -- run http://127.0.0.1:8080/ \
+  --profile ramp --from 200 --to 1600 --duration 30 --no-ui \
+  --json ./run.json --report ./run.html
+
+# Fail the process if corrected p99 / error rate / knee miss the contract
+cargo run --release -p gust -- run http://127.0.0.1:8080/ \
+  --rate 600 --duration 8 --no-ui \
+  --max-p99-ms 50 --max-error-rate 0.01 --min-success-rate 0.99
+
+# After you change the system: compare baseline → candidate (exit 1 on regress)
+cargo run --release -p gust -- compare ./baseline.json ./after.json
+
+# Rebuild HTML from a saved artifact
+cargo run --release -p gust -- report ./run.json -o ./run.html
+```
+
+Walkthrough with real before/after numbers (pool 4 → pool 8 on the demo API):
+[`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
+
 The live dashboard shows throughput, in-flight depth, the cumulative raw-vs-corrected
 percentile table, latency over time, and a knee banner when the break is detected.
 Press `q` to stop.
@@ -161,7 +185,7 @@ swings to ~2× capacity when a prior run left the target still queueing.
 ```
 gust/
 ├── AGENTS.md            # handoff for other worktrees / agents (start here)
-├── docs/                # PLAN, ARCHITECTURE, DECISIONS, STATUS, HANDOFF, KNEE + images
+├── docs/                # PLAN, ARCHITECTURE, DECISIONS, STATUS, HANDOFF, KNEE, CASE-STUDY + images
 ├── examples/            # demo-api.js (capacity-limited target) + scenarios
 ├── crates/
 │   ├── gust-core/       # pure measurement — no I/O, no async, unit-tested
@@ -185,6 +209,9 @@ subtle part, so it is tested without a network (`cargo test -p gust-core`).
   detection; self-contained HTML report via `--report`.
 - **P3 (done):** TOML scenarios (sequence journeys + weighted mix); in-flight
   backpressure chart; `--method` / `--header` / `--body` on single-URL runs.
+- **Compare / CI (done):** `--json` run artifacts; `gust compare`; `gust report`;
+  `--max-p99-ms` / `--max-error-rate` / `--min-success-rate` / `--min-knee-rps`
+  / `--require-knee` exit gates. See [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
 - **P4 (only if a real need appears):** distributed generators across machines
   with correctly-merged histograms — the one place a coordination layer earns
   its keep.
@@ -192,10 +219,13 @@ subtle part, so it is tested without a network (`cargo test -p gust-core`).
 ## Writing material
 
 Start with [`docs/KNEE.md`](docs/KNEE.md) — a short, numbers-backed walkthrough
-of finding the breaking point on the demo API. Each phase is also a post:
-coordinated omission and why averages lie (P0), rendering a distribution going
-bimodal the moment a pool exhausts (P1), detecting the knee (P2), merging HDR
-histograms across machines without corrupting percentiles (P4).
+of finding the breaking point on the demo API. Then
+[`docs/CASE-STUDY.md`](docs/CASE-STUDY.md) — baseline → fix → `gust compare`
+with a clear IMPROVED verdict. Each phase is also a post: coordinated omission
+and why averages lie (P0), rendering a distribution going bimodal the moment a
+pool exhausts (P1), detecting the knee (P2), regression-aware load testing
+(compare/CI), merging HDR histograms across machines without corrupting
+percentiles (P4).
 
 ## License
 

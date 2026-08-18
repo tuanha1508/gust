@@ -1,20 +1,20 @@
 # Gust — Agent / Worktree Handoff
 
 > Read this first if you are continuing Gust from another worktree or session.
-> Last updated: 2026-08-17
+> Last updated: 2026-08-19
 
 ## What Gust is
 
 **Gust** is a Rust load-testing studio. Tagline: *Find where your system falls apart.*
 
-Product bet: win the occupied load-testing category (k6, Vegeta, oha, Goose, loadr) on **craft and clarity**, not novelty. Differentiator = beautiful, correct visualization of system degradation under load — especially the **knee** where p99 detaches from p50.
+Product bet: win the occupied load-testing category (k6, Vegeta, oha, Goose, loadr) on **craft and clarity**, not novelty. Differentiator = beautiful, correct visualization of system degradation under load — especially the **knee** where p99 detaches from p50 — plus JSON artifacts / `gust compare` so a capacity fix is *provable*.
 
 Not a finance simulator. Not Kafka-first. Kafka/distributed generators only appear in P4 if a real need exists.
 
 ## Goals (user priorities)
 
 1. **Real users** — developers actually run it against their APIs
-2. **Portfolio signal** — “I built a correct open-model load tester with live degradation UI”
+2. **Portfolio signal** — “I measured a system, found the knee, fixed capacity, proved it with compare/CI”
 3. **Learning** — async Rust, HDR histograms, coordinated omission, Tokio scheduling, TUI craft
 
 Cost target: **$0** local-first (no paid APIs, no managed infra).
@@ -27,6 +27,7 @@ Cost target: **$0** local-first (no paid APIs, no managed infra).
 | P1 | **Done** | Live ratatui dashboard: throughput, percentile table, windowed p50/p90/p99 chart |
 | P2 | **Done** | Ramp profiles + automatic breaking-point (knee) detection + HTML report |
 | P3 | **Done** | Multi-endpoint / scenarios; in-flight backpressure viz |
+| Compare/CI | **Done** | `--json`, `gust compare`, `gust report`, threshold exit gates |
 | P4 | Maybe | Distributed generators + correct histogram merge |
 
 ## Repo layout
@@ -40,6 +41,8 @@ gust/
 │   ├── ARCHITECTURE.md    ← crates, data flow, invariants
 │   ├── DECISIONS.md       ← why we chose what we chose
 │   ├── STATUS.md          ← done / known gaps / next tasks
+│   ├── KNEE.md            ← knee walkthrough with real numbers
+│   ├── CASE-STUDY.md      ← baseline → fix → compare (portfolio loop)
 │   └── HANDOFF.md         ← commands, verify, continue checklist
 ├── crates/
 │   ├── gust-core/         ← pure measurement (no I/O, no async)
@@ -67,11 +70,15 @@ cargo build --release -p gust
 
 # Demo target that breaks near ~720 req/s (800 theoretical) — the dogfood loop:
 node examples/demo-api.js
-cargo run --release -p gust -- run http://127.0.0.1:8080/ --profile ramp --from 200 --to 1600 --duration 30 --report ./out.html
+cargo run --release -p gust -- run http://127.0.0.1:8080/ --profile ramp --from 200 --to 1600 --duration 30 --report ./out.html --json ./out.json
+cargo run --release -p gust -- compare ./baseline.json ./after.json
 cargo run --release -p gust -- run --scenario examples/demo-mix.toml --rate 200 --duration 10 --no-ui
 cargo run --release -p gust -- run http://127.0.0.1:8080/ --rate 200 --duration 10   # TUI
 ```
 
 ## Where to continue
 
-Single-node Gust (P0–P3) is complete. Only start **P4** if a real multi-machine need appears — see [`docs/PLAN.md`](docs/PLAN.md). Polish / dogfood tasks are in [`docs/STATUS.md`](docs/STATUS.md).
+Single-node Gust (P0–P3 + compare/CI) is complete. Prefer distribution polish
+(GitHub Releases, demo GIF) or dogfooding against owned APIs. Only start **P4**
+if a real multi-machine need appears — see [`docs/PLAN.md`](docs/PLAN.md).
+Polish / dogfood tasks are in [`docs/STATUS.md`](docs/STATUS.md).
