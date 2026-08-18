@@ -81,6 +81,19 @@ The live dashboard shows throughput, in-flight depth, the cumulative raw-vs-corr
 percentile table, latency over time, and a knee banner when the break is detected.
 Press `q` to stop.
 
+### What the report looks like
+
+A ramp against the demo API (200 → 1600 req/s, 30s) lands a knee near
+**806 req/s** and recommends **~604 req/s** as a safe operating load — close to
+the measured ~720 capacity, a little high because a ramp does not dwell:
+
+![Gust HTML report — knee banner](docs/images/report-hero.png)
+
+![Windowed latency with the knee marked](docs/images/report-latency.png)
+
+Longer walkthrough with the throughput chart and the coordinated-omission
+angle: [`docs/KNEE.md`](docs/KNEE.md).
+
 Real output from the weighted mix above, against the demo API:
 
 ```
@@ -148,7 +161,7 @@ swings to ~2× capacity when a prior run left the target still queueing.
 ```
 gust/
 ├── AGENTS.md            # handoff for other worktrees / agents (start here)
-├── docs/                # PLAN, ARCHITECTURE, DECISIONS, STATUS, HANDOFF
+├── docs/                # PLAN, ARCHITECTURE, DECISIONS, STATUS, HANDOFF, KNEE + images
 ├── examples/            # demo-api.js (capacity-limited target) + scenarios
 ├── crates/
 │   ├── gust-core/       # pure measurement — no I/O, no async, unit-tested
@@ -178,10 +191,11 @@ subtle part, so it is tested without a network (`cargo test -p gust-core`).
 
 ## Writing material
 
-Each phase is a post: coordinated omission and why averages lie (P0), rendering
-a distribution going bimodal the moment a pool exhausts (P1), detecting the knee
-(P2), merging HDR histograms across machines without corrupting percentiles
-(P4).
+Start with [`docs/KNEE.md`](docs/KNEE.md) — a short, numbers-backed walkthrough
+of finding the breaking point on the demo API. Each phase is also a post:
+coordinated omission and why averages lie (P0), rendering a distribution going
+bimodal the moment a pool exhausts (P1), detecting the knee (P2), merging HDR
+histograms across machines without corrupting percentiles (P4).
 
 ## License
 
