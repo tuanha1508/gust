@@ -1,47 +1,57 @@
-# Gust
+<p align="center">
+  <img src="docs/images/logo.png" alt="Gust" width="192">
+</p>
 
-**Find where your system falls apart.**
+<h1 align="center">Gust</h1>
 
-Gust is a load-testing studio: point it at an API, ramp up traffic, and watch
-the system break in real time — latency distributions spreading, p99 detaching
-from p50, throughput flattening while errors climb. It is built in Rust because
-a load generator is one of the few tools where *the tool itself* must not be the
-bottleneck, and it is designed so the degradation is beautiful to watch, not
-just a summary table.
+<p align="center"><strong>Find where your system falls apart.</strong></p>
 
-## Why this exists
+<p align="center">
+  <a href="https://github.com/tuanha1508/gust/actions/workflows/ci.yml"><img src="https://github.com/tuanha1508/gust/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/tuanha1508/gust/releases"><img src="https://img.shields.io/github/v/release/tuanha1508/gust" alt="Release"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License"></a>
+</p>
 
-The category is occupied — k6, Vegeta, `oha`, `rlt`, Goose. None of them win on
-being *nice to use*. k6 prints a table. JMeter is ancient Java. The terminal
-tools are fast but terminal-only. Gust's bet is the same one TablePlus made
-against free SQL clients and `foley` made against other UI-sound libraries:
-**win an occupied category on craft, not on novelty.** The differentiator is a
-gorgeous, legible view of a system degrading under load.
+<p align="center">
+  Open-model HTTP load tester in Rust.
+  Ramp an API, watch p99 detach from p50, and leave with a number you can provision against.
+</p>
 
-## The one thing Gust gets right on day one: coordinated omission
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#why-gust">Why Gust</a> ·
+  <a href="#more-commands">Commands</a> ·
+  <a href="#docs">Docs</a>
+</p>
 
-Most load testers lie about latency. When a target stalls, a naive tester stops
-sending requests and never records the latency those blocked-but-never-sent
-requests would have seen — so the distribution looks *best* exactly when the
-system is at its worst. This is *coordinated omission* (Gil Tene's term).
+![Gust HTML report — knee banner](docs/images/report-hero.png)
 
-Gust uses an **open-model scheduler**: it fires requests on a fixed wall-clock
-schedule regardless of whether earlier ones have come back, and it corrects the
-histogram against the intended send interval. Every run reports **raw vs
-corrected** percentiles side by side. The gap between them is the latency your
-users actually feel.
+A ramp against the demo API (200 → 1600 req/s, 30s) lands a knee near **806 req/s** and recommends **~604 req/s** as a safe operating load.
+
+## Highlights
+
+| | |
+| --- | --- |
+| **Open-model scheduling** | Fires on a wall-clock schedule. Never waits for a response before sending the next request. |
+| **Raw + corrected percentiles** | Coordinated-omission correction sits next to the naive numbers. The gap is the latency users feel. |
+| **Knee detection** | Finds where p99 detaches from p50 on a ramp, then names a safe load (75% of knee). |
+| **SLO capacity** | `--slo-p99-ms 50` → the max req/s that still holds your p99 budget. |
+| **Live TUI + HTML report** | Watch throughput, in-flight depth, and the tail in the terminal; keep a self-contained report. |
+| **Compare / CI** | `gust compare` plus exit gates, so a capacity fix is a table, not a screenshot. |
+
+Versus k6, Vegeta, `oha`, Goose: they are fast. Gust wins on **showing the breaking point** — and proving the fix.
 
 ## Install
 
-No Rust toolchain required — grab a prebuilt binary:
+No Rust toolchain required:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuanha1508/gust/main/scripts/install.sh | bash
 ```
 
-That installs into `~/.local/bin` (override with `DEST=/usr/local/bin`). Or pick
-an archive from [GitHub Releases](https://github.com/tuanha1508/gust/releases)
-(`macOS arm64/x86_64`, `Linux x86_64/aarch64`).
+Installs into `~/.local/bin` (override with `DEST=/usr/local/bin`). Archives also live on
+[GitHub Releases](https://github.com/tuanha1508/gust/releases) (`macOS arm64/x86_64`, `Linux x86_64/aarch64`).
 
 From source:
 
@@ -51,64 +61,50 @@ cargo install --git https://github.com/tuanha1508/gust.git --locked gust
 git clone https://github.com/tuanha1508/gust.git && cd gust && cargo build --release -p gust
 ```
 
-## Try it
+## Quick start
 
-Gust ships a demo API that falls apart for a real reason: it serves requests
-from a fixed-size pool, so once arrivals outpace capacity, requests queue.
-Nothing is faked — the knee you see is genuine queueing.
+The demo API saturates for a real reason: a fixed-size pool. Once arrivals outpace capacity, requests queue. Nothing is faked.
 
 ```bash
-# Terminal 1 — a target that saturates near ~720 req/s (pool 8, ~11ms effective service):
-node examples/demo-api.js
+# Terminal 1 — a target that breaks near ~720 req/s
+curl -fsSL https://raw.githubusercontent.com/tuanha1508/gust/main/examples/demo-api.js | node
 
-# Terminal 2 — ramp straight through the breaking point:
+# Terminal 2 — ramp straight through the breaking point
 gust run http://127.0.0.1:8080/ \
   --profile ramp --from 200 --to 1600 --duration 30 \
   --slo-p99-ms 50 --report ./gust-report.html --json ./gust-run.json
 ```
 
-(If you built from source and have not installed the binary, prefix with
-`cargo run --release -p gust --`.)
+Open `gust-report.html`. You should see a knee near ~800 req/s, an SLO line, and a written diagnosis.
 
-Other things you can point it at:
+If you built from source and have not installed the binary, prefix commands with `cargo run --release -p gust --`.
 
-```bash
-# Live dashboard (default) at a constant rate:
-cargo run --release -p gust -- run http://127.0.0.1:8080/ --rate 200 --duration 10
+## Why Gust
 
-# Plain summary for scripts / CI:
-cargo run --release -p gust -- run http://127.0.0.1:8080/ --rate 200 --duration 10 --no-ui
+Most load testers lie about latency. When a target stalls, a naive tester stops sending and never records the wait those blocked-but-never-sent requests would have seen — so the distribution looks *best* exactly when the system is at its worst. Gil Tene called this **coordinated omission**.
 
-# Weighted mix of endpoints with different costs:
-cargo run --release -p gust -- run --scenario examples/demo-mix.toml \
-  --profile ramp --from 50 --to 500 --duration 25
+Gust uses an **open-model scheduler**: it fires on a fixed wall-clock schedule whether earlier requests have come back or not, and it corrects the histogram against the intended send interval. Every run reports **raw vs corrected** side by side.
 
-# Multi-step journey with think-time:
-cargo run --release -p gust -- run --scenario examples/journey.toml --rate 50 --duration 20
+Read the p50 row twice:
 
-# Method / headers / body:
-cargo run --release -p gust -- run http://127.0.0.1:8080/api/items \
-  --method POST --header "Content-Type: application/json" --body '{"ok":true}'
-
-# Bearer / Basic / cookies (demo `/api/me` requires one of these):
-cargo run --release -p gust -- run http://127.0.0.1:8080/api/me \
-  --bearer demotoken --rate 50 --duration 5 --no-ui
-cargo run --release -p gust -- run http://127.0.0.1:8080/api/me \
-  --basic-auth demo:demo --rate 50 --duration 5 --no-ui
-
-# Login → protected API via cookie jar:
-cargo run --release -p gust -- run --scenario examples/auth-journey.toml \
-  --cookie-jar --rate 20 --duration 5 --no-ui
+```
+  latency (ms)      raw     corrected
+  p50              30.46        184.45
+  p99             742.91        689.66
 ```
 
-### Answer the capacity question: "how much load fits my SLO?"
+A naive tester reports a **30ms median**. Correction says users actually waited **184ms**. That gap is the product.
 
-Most load testers hand you percentiles and let you eyeball a chart. Gust turns a
-p99 budget into the number you actually provision for — the **max req/s that
-holds under your SLO**:
+![Windowed latency with the knee marked](docs/images/report-latency.png)
+
+On this ramp the knee is the dashed cyan line — p99 leaves the service floor and does not come back. Longer walkthrough with numbers: [`docs/KNEE.md`](docs/KNEE.md).
+
+## What you get
+
+### A capacity number, not just a chart
 
 ```bash
-cargo run --release -p gust -- run http://127.0.0.1:8080/ \
+gust run http://127.0.0.1:8080/ \
   --profile ramp --from 100 --to 1200 --duration 20 --no-ui \
   --slo-p99-ms 50
 ```
@@ -117,38 +113,39 @@ cargo run --release -p gust -- run http://127.0.0.1:8080/ \
   SLO:       p99 ≤ 50ms sustains ≈ 840 req/s (797 served) at t=13.5s
 ```
 
-It appears in the summary, the HTML banner, and — because it is saved in the
-JSON artifact — in `gust compare`, so a capacity fix reads as a single line:
+It lands in the summary, the HTML banner, and the JSON artifact — so `gust compare` can say the fix in one line:
 
 ```
   SLO capacity (req/s)      427.068 →    839.965  (improved, Δ +412.897)
 ```
 
-### Save a run, gate CI, prove a fix
+### A written diagnosis
 
-```bash
-# JSON artifact (plus optional HTML)
-cargo run --release -p gust -- run http://127.0.0.1:8080/ \
-  --profile ramp --from 200 --to 1600 --duration 30 --no-ui \
-  --json ./run.json --report ./run.html
+Every finished run names the failure mode (*latency saturation*, *throughput collapse*, *error spike*, *dead target*, or *healthy*) and what to do next:
 
-# Fail the process if corrected p99 / error rate / knee miss the contract
-cargo run --release -p gust -- run http://127.0.0.1:8080/ \
-  --rate 600 --duration 8 --no-ui \
-  --max-p99-ms 50 --max-error-rate 0.01 --min-success-rate 0.99
-
-# After you change the system: compare baseline → candidate (exit 1 on regress)
-cargo run --release -p gust -- compare ./baseline.json ./after.json
-
-# Markdown for a PR comment, or JSON for tooling
-cargo run --release -p gust -- compare ./baseline.json ./after.json --format md
-cargo run --release -p gust -- compare ./baseline.json ./after.json --format json
-
-# Rebuild HTML from a saved artifact
-cargo run --release -p gust -- report ./run.json -o ./run.html
+```
+  diagnosis: Throughput collapsed near ≈ 304 req/s — the system could not keep up with arrivals.
+    · knee ≈ 304 req/s at t=1.5s — p99 73.7ms (4× service floor) and throughput 34% of target
+    · recommended safe load ≈ 228 req/s (75% of knee)
 ```
 
-`--format md` renders a table a CI job can drop straight onto the pull request:
+Re-run it from a saved artifact: `gust diagnose ./run.json`.
+
+### Prove a fix in CI
+
+```bash
+gust run http://127.0.0.1:8080/ --profile ramp --from 200 --to 1600 --duration 30 --no-ui \
+  --json ./run.json --report ./run.html
+
+gust run http://127.0.0.1:8080/ --rate 600 --duration 8 --no-ui \
+  --max-p99-ms 50 --max-error-rate 0.01 --min-success-rate 0.99
+
+gust compare ./baseline.json ./after.json            # exit 1 on regress
+gust compare ./baseline.json ./after.json --format md
+gust report ./run.json -o ./run.html
+```
+
+`--format md` is a table a CI job can drop on the pull request:
 
 ```
 ### gust compare
@@ -158,102 +155,47 @@ cargo run --release -p gust -- report ./run.json -o ./run.html
 | metric | baseline | candidate | Δ | |
 | --- | ---: | ---: | ---: | :--- |
 | corrected p99 (ms) | 4943.871 | 1887.231 | -3056.640 | improved |
-| error rate | 0.496 | 0.000 | -0.496 | improved |
 | knee (req/s) | 411.946 | 808.506 | +396.560 | improved |
 | SLO capacity (req/s) | 427.068 | 839.965 | +412.897 | improved |
 ```
 
-Drop [`examples/gust-perf-gate.yml`](examples/gust-perf-gate.yml) into
-`.github/workflows/` to run this on every PR: it posts the table as a comment
-and fails the check on a regression.
+Drop [`examples/gust-perf-gate.yml`](examples/gust-perf-gate.yml) into `.github/workflows/` to run this on every PR. Walkthrough with real before/after numbers (pool 4 → pool 8): [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
 
-Walkthrough with real before/after numbers (pool 4 → pool 8 on the demo API):
-[`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
+The live dashboard shows throughput, in-flight depth, the raw-vs-corrected table, latency over time, and a knee banner when the break is detected. Press `q` to stop.
 
-### Plain-English diagnosis
-
-Every finished run now includes a written verdict — not just numbers. Gust
-names the failure mode (*latency saturation*, *throughput collapse*, *error
-spike*, *dead target*, or *healthy*) and explains what to do next:
-
-```
-  diagnosis: Throughput collapsed near ≈ 304 req/s — the system could not keep up with arrivals. (throughput collapse)
-    · knee ≈ 304 req/s at t=1.5s — p99 73.7ms (4× service floor) and throughput 34% of target
-    · recommended safe load ≈ 228 req/s (75% of knee)
-    · SLO p99 ≤ 50ms sustains ≈ 304 req/s
-    · peak in-flight ≈ 5165 requests
-
-  Offered load outran completions: throughput flattened while the intended send
-  rate kept climbing. That is classic backpressure — a bounded pool, saturated
-  CPU, or a downstream bottleneck that cannot absorb arrivals.
-```
-
-Re-run the diagnosis from a saved artifact:
+## More commands
 
 ```bash
-cargo run --release -p gust -- diagnose ./run.json
+# Live dashboard at a constant rate
+gust run http://127.0.0.1:8080/ --rate 200 --duration 10
+
+# Plain summary for scripts / CI
+gust run http://127.0.0.1:8080/ --rate 200 --duration 10 --no-ui
+
+# Weighted mix of endpoints
+gust run --scenario examples/demo-mix.toml --profile ramp --from 50 --to 500 --duration 25
+
+# Multi-step journey with think-time
+gust run --scenario examples/journey.toml --rate 50 --duration 20
+
+# Method / headers / body
+gust run http://127.0.0.1:8080/api/items \
+  --method POST --header "Content-Type: application/json" --body '{"ok":true}'
+
+# Bearer / Basic
+gust run http://127.0.0.1:8080/api/me --bearer demotoken --rate 50 --duration 5 --no-ui
+gust run http://127.0.0.1:8080/api/me --basic-auth demo:demo --rate 50 --duration 5 --no-ui
+
+# Login → protected API via cookie jar
+gust run --scenario examples/auth-journey.toml --cookie-jar --rate 20 --duration 5 --no-ui
 ```
 
-The live dashboard shows throughput, in-flight depth, the cumulative raw-vs-corrected
-percentile table, latency over time, and a knee banner when the break is detected.
-Press `q` to stop.
+Scenario files live in [`examples/`](examples/). Clone the repo (or copy the TOML) for those.
 
-### What the report looks like
+<details>
+<summary>Does the knee match ground truth?</summary>
 
-A ramp against the demo API (200 → 1600 req/s, 30s) lands a knee near
-**806 req/s** and recommends **~604 req/s** as a safe operating load — close to
-the measured ~720 capacity, a little high because a ramp does not dwell:
-
-![Gust HTML report — knee banner](docs/images/report-hero.png)
-
-![Windowed latency with the knee marked](docs/images/report-latency.png)
-
-Longer walkthrough with the throughput chart and the coordinated-omission
-angle: [`docs/KNEE.md`](docs/KNEE.md).
-
-Real output from the weighted mix above, against the demo API:
-
-```
-gust: ramp 50→500 req/s for 25s · demo-mix (3 steps, Weighted)
-
-  arrivals:  6873
-  completed: 6873
-  success:   6873 (100.0%)
-  failure:   0 (0.0%)
-
-  latency (ms)      raw     corrected
-  min               9.11          2.02
-  p50              30.46        184.45
-  p90             446.46        498.94
-  p99             742.91        689.66
-  p99.9           787.46        756.22
-  max             805.89        805.89
-
-  knee:      ≈ 457 req/s at t=22.9s (p99 315.4ms (6× baseline) and throughput 83% of target)
-  safe load: ≈ 343 req/s (75% of knee)
-```
-
-Read the p50 row twice. A naive tester reports a **30ms median**; the
-coordinated-omission correction says users actually waited **184ms**. That gap
-is the whole point.
-
-For multi-endpoint scenarios, Gust also breaks latency out **by step** (slowest
-corrected p99 first), so you can see which route was holding the pool:
-
-```
-  by step (slowest corrected p99 first)
-  step                  n      p50      p99   p99 corr
-  checkout             63     50.3     51.6       51.4
-  search              192     30.9     32.0       31.9
-  items               384     10.9     11.8       11.8
-```
-
-### Does the knee detection actually work?
-
-The demo API's capacity is measurable, so you can check Gust against ground
-truth. A constant-rate sweep (`--rate R --duration 8 --no-ui`) shows exactly
-where pool-8 falls apart — latency sits at the ~11ms service floor until
-arrivals outrun the pool, then p99 climbs an order of magnitude:
+The demo API's capacity is measurable. A constant-rate sweep (`--rate R --duration 8 --no-ui`) against pool 8:
 
 | Rate | raw p99 | Verdict |
 | --- | --- | --- |
@@ -262,68 +204,23 @@ arrivals outrun the pool, then p99 climbs an order of magnitude:
 | 800 req/s | ~180 ms | over capacity |
 | 850 req/s | ~670 ms | saturated |
 
-So the real breaking point is **~720 req/s** — close to `pool ÷ effective
-service time` (8 ÷ 11ms ≈ 727), and about 10% under the naive `8 ÷ 10ms = 800`
-ceiling because Node's single-threaded event loop adds ~1ms per request.
+Real breaking point ≈ **720 req/s** (`pool ÷ ~11ms effective service`). A ramp reports a single knee a little higher (~800–870) because it does not dwell long enough for the queue to fully form — treat it as "≈ where it breaks" and operate at the *recommended* load (75% of knee). Full numbers: [`docs/KNEE.md`](docs/KNEE.md).
 
-On a *ramp*, Gust reports a single knee near this band. The exact number is
-a little higher than the sweep (~800–870 vs ~720) because a ramp does not dwell
-long enough at each rate for the queue to fully form — treat it as "≈ where it
-breaks" and the *recommended* load (75% of knee) as the number to operate under.
-Across back-to-back runs the ramp knee stays in a tight band; it no longer
-swings to ~2× capacity when a prior run left the target still queueing.
+</details>
 
-## Architecture
+## Docs
 
-```
-gust/
-├── AGENTS.md            # handoff for other worktrees / agents (start here)
-├── docs/                # PLAN, ARCHITECTURE, DECISIONS, STATUS, HANDOFF, KNEE, CASE-STUDY + images
-├── examples/            # demo-api.js (capacity-limited target) + scenarios
-├── crates/
-│   ├── gust-core/       # pure measurement — no I/O, no async, unit-tested
-│   └── gust-cli/        # binary — open-model scheduler + reqwest + TUI
-└── Cargo.toml
-```
+| | |
+| --- | --- |
+| [`docs/KNEE.md`](docs/KNEE.md) | Numbers-backed walkthrough of the breaking point |
+| [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md) | Baseline → fix → `gust compare` (the portfolio loop) |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Crates, data flow, invariants |
+| [`docs/STATUS.md`](docs/STATUS.md) | Done, known gaps, next polish |
 
-The engine is kept free of I/O on purpose: the coordinated-omission logic is the
-subtle part, so it is tested without a network (`cargo test -p gust-core`).
+`gust-core` is pure measurement — no Tokio, no HTTP, no TUI — so the coordinated-omission logic is unit-tested offline (`cargo test -p gust-core`).
 
-**Continuing elsewhere?** Read [`AGENTS.md`](./AGENTS.md) then [`docs/HANDOFF.md`](./docs/HANDOFF.md).
-
-## Roadmap
-
-- **P0 (done):** constant-rate open-model run against one URL; raw vs corrected
-  HDR percentiles.
-- **P1 (done):** live TUI — windowed p50/p90/p99 chart so the tail visibly
-  detaches from the median, throughput readout, and a percentile table that
-  flags coordinated-omission gaps.
-- **P2 (done):** ramping load profiles; automatic breaking-point (knee)
-  detection; self-contained HTML report via `--report`.
-- **P3 (done):** TOML scenarios (sequence journeys + weighted mix); in-flight
-  backpressure chart; `--method` / `--header` / `--body` on single-URL runs.
-- **Compare / CI (done):** `--json` run artifacts; `gust compare`; `gust report`;
-  `--max-p99-ms` / `--max-error-rate` / `--min-success-rate` / `--min-knee-rps`
-  / `--require-knee` exit gates. See [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
-- **SLO capacity (done):** `--slo-p99-ms` reports the max load that holds under a
-  p99 budget; flows into compare.
-- **Auto-diagnosis (done):** plain-English cause + narrative on every run;
-  `gust diagnose <run.json>`.
-- **P4 (only if a real need appears):** distributed generators across machines
-  with correctly-merged histograms — the one place a coordination layer earns
-  its keep.
-
-## Writing material
-
-Start with [`docs/KNEE.md`](docs/KNEE.md) — a short, numbers-backed walkthrough
-of finding the breaking point on the demo API. Then
-[`docs/CASE-STUDY.md`](docs/CASE-STUDY.md) — baseline → fix → `gust compare`
-with a clear IMPROVED verdict. Each phase is also a post: coordinated omission
-and why averages lie (P0), rendering a distribution going bimodal the moment a
-pool exhausts (P1), detecting the knee (P2), regression-aware load testing
-(compare/CI), merging HDR histograms across machines without corrupting
-percentiles (P4).
+P0–P3 + compare/CI are done. Distributed generators (P4) only if one machine is not enough.
 
 ## License
 
-MIT OR Apache-2.0.
+MIT OR Apache-2.0. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
