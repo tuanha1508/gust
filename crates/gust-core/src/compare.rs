@@ -3,6 +3,8 @@
 //! These are the recruiter-facing product primitives: save a baseline, change
 //! the system, prove the capacity / latency story with numbers — not vibes.
 
+use serde::Serialize;
+
 use crate::{Knee, SloCapacity, Summary};
 
 /// Metrics extracted from a finished run for comparison / gates.
@@ -50,15 +52,26 @@ impl RunMetrics {
 }
 
 /// How one metric moved from baseline → candidate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Direction {
     Improved,
     Regressed,
     Equivalent,
 }
 
+impl Direction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Improved => "improved",
+            Self::Regressed => "regressed",
+            Self::Equivalent => "equivalent",
+        }
+    }
+}
+
 /// One metric's absolute values plus the classified delta.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MetricChange {
     pub name: &'static str,
     pub baseline: f64,
@@ -69,7 +82,8 @@ pub struct MetricChange {
 }
 
 /// Overall compare verdict for CI / humans.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Verdict {
     /// Every comparable metric improved or stayed equivalent; at least one improved.
     Improved,
@@ -86,10 +100,20 @@ impl Verdict {
     pub fn is_failure(self) -> bool {
         matches!(self, Self::Regressed | Self::Mixed)
     }
+
+    /// Uppercase label for headlines (`IMPROVED`, `REGRESSED`, …).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Improved => "IMPROVED",
+            Self::Equivalent => "EQUIVALENT",
+            Self::Mixed => "MIXED",
+            Self::Regressed => "REGRESSED",
+        }
+    }
 }
 
 /// Full compare result: per-metric changes + rollup verdict.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CompareReport {
     pub p99: MetricChange,
     pub error_rate: MetricChange,
@@ -97,6 +121,50 @@ pub struct CompareReport {
     /// SLO-sustainable RPS delta, when both runs used the *same* p99 budget.
     pub slo: Option<MetricChange>,
     pub verdict: Verdict,
+}
+
+impl CompareReport {
+    /// Metric changes in display order (skips absent knee / SLO rows).
+    pub fn metrics(&self) -> Vec<&MetricChange> {
+        let mut v = vec![&self.p99, &self.error_rate];
+        if let Some(k) = &self.knee {
+            v.push(k);
+        }
+        if let Some(s) = &self.slo {
+            v.push(s);
+        }
+        v
+    }
+
+    /// GitHub-friendly Markdown, suitable for a PR comment.
+    pub fn to_markdown(&self) -> String {
+        let emoji = match self.verdict {
+            Verdict::Improved => "✅",
+            Verdict::Equivalent => "➖",
+            Verdict::Mixed => "⚠️",
+            Verdict::Regressed => "❌",
+        };
+        let mut out = String::new();
+        out.push_str("### gust compare\n\n");
+        out.push_str(&format!(
+            "**Verdict: {} {}**\n\n",
+            emoji,
+            self.verdict.label()
+        ));
+        out.push_str("| metric | baseline | candidate | Δ | |\n");
+        out.push_str("| --- | ---: | ---: | ---: | :--- |\n");
+        for m in self.metrics() {
+            out.push_str(&format!(
+                "| {} | {:.3} | {:.3} | {:+.3} | {} |\n",
+                m.name,
+                m.baseline,
+                m.candidate,
+                m.delta,
+                m.direction.as_str(),
+            ));
+        }
+        out
+    }
 }
 
 /// Relative + absolute slop so noise does not flip the verdict.
@@ -382,6 +450,17 @@ mod tests {
         assert!(v.iter().any(|x| x.detail.contains("error rate")));
         assert!(v.iter().any(|x| x.detail.contains("success rate")));
         assert!(v.iter().any(|x| x.detail.contains("knee")));
+    }
+
+    #[test]
+    fn markdown_has_verdict_and_rows() {
+        let base = RunMetrics::from_summary(&summary(100.0, 100, 0), Some(&knee(700.0)));
+        let cand = RunMetrics::from_summary(&summary(40.0, 100, 0), Some(&knee(900.0)));
+        let md = compare(&base, &cand).to_markdown();
+        assert!(md.contains("IMPROVED"));
+        assert!(md.contains("corrected p99 (ms)"));
+        assert!(md.contains("knee (req/s)"));
+        assert!(md.contains("| metric |"));
     }
 
     #[test]
