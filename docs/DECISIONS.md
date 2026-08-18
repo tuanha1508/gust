@@ -67,3 +67,14 @@ Record of important choices so a later worktree does not re-litigate them withou
 **Decision (soft):** p50 green, p90 yellow, p99 light red; cyan brand chip for “gust”; red highlight when corrected ≫ raw.
 
 **Why:** Instant reading of “tail is peeling away.” Avoid purple-gradient AI-slop look; keep terminal craft tight.
+
+## D11 — crates.io package name is not `gust`
+
+**Decision:** Keep the binary and GitHub repo named **Gust**, but do **not**
+publish a crates.io package as `gust`. That name is already taken by an
+unrelated 2017 charting library (saresend/Gust). If we publish later, use a
+distinct package name (candidate: `gust-load`) and keep `[[bin]] name = "gust"`.
+
+**Why:** Spot-check before publish was already noted in D2; confirmed taken
+2026-08. Renaming the CLI would throw away the brand for no user benefit.
+

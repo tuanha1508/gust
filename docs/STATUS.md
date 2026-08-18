@@ -91,7 +91,10 @@ TUI requires a real interactive terminal (not verified in headless agent shell).
 8. ~~**No cookie jar / auth helpers**~~ — `--bearer`, `--basic-auth`,
    `--cookie`, `--cookie-jar`, plus scenario `[auth]` / `[cookies]` /
    `cookie_jar`. Demo: `POST /login` + `GET /api/me`, `examples/auth-journey.toml`.
-9. **No `cargo publish` / crates.io claim** for `gust` yet.
+9. **crates.io name `gust` is taken** — an unrelated 2017 charting crate
+   ([crates.io/crates/gust](https://crates.io/crates/gust)). Do not `cargo
+   publish` under that name. Binary stays `gust`; if we publish later, pick a
+   distinct package name (e.g. `gust-load`) without renaming the CLI.
 
 ## Next tasks (P4) — only if needed
 
@@ -100,9 +103,11 @@ Distributed generators + correct HDR merge. Do **not** start until single-node G
 Polish first, in rough value order:
 1. Optional connection-pool wait metrics from reqwest (if exposed)
 2. Steps / hold profile if dogfooding wants it
+3. Publish under a free crates.io name if/when distribution matters
 
 ## Intentionally not started
 
 - Kafka / Redis / distributed workers
 - Desktop GUI
 - gRPC / WS protocols
+- Claiming the `gust` crates.io name (already owned)
