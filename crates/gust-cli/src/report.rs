@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use gust_core::{Knee, SloCapacity, StepSummary, Summary, WindowMetric};
+use gust_core::{Diagnosis, Knee, SloCapacity, StepSummary, Summary, WindowMetric};
 use serde::{Deserialize, Serialize};
 
 /// Bump when the on-disk JSON shape changes in a breaking way.
@@ -30,6 +30,9 @@ pub struct RunReport {
     /// SLO-driven capacity, present when the run was given a `--slo-p99-ms`.
     #[serde(default)]
     pub slo: Option<SloCapacity>,
+    /// Plain-English auto-diagnosis of what happened.
+    #[serde(default)]
+    pub diagnosis: Option<Diagnosis>,
     /// Why the first failed request failed, if any did.
     pub failure_reason: Option<String>,
 }
@@ -113,6 +116,29 @@ fn render(r: &RunReport) -> String {
         _ => String::new(),
     };
 
+    let diagnosis_panel = match &r.diagnosis {
+        Some(d) => {
+            let bullets: String = d
+                .evidence
+                .iter()
+                .map(|e| format!("<li>{}</li>", escape(e)))
+                .collect();
+            format!(
+                "<div class=\"diagnosis\">\
+                 <div class=\"diag-label\">diagnosis · {}</div>\
+                 <strong>{}</strong>\
+                 <p class=\"muted\">{}</p>\
+                 <ul>{}</ul>\
+                 </div>",
+                escape(d.cause.label()),
+                escape(&d.headline),
+                escape(&d.narrative),
+                bullets
+            )
+        }
+        None => String::new(),
+    };
+
     let s = &r.summary;
     let pct = |n: u64| {
         if s.total == 0 {
@@ -168,6 +194,16 @@ fn render(r: &RunReport) -> String {
     border-radius: 8px; padding: 0.85rem 1.25rem; margin-bottom: 1rem;
   }}
   .slo.miss {{ background: #2c2126; border-color: var(--yellow); }}
+  .diagnosis {{
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem;
+  }}
+  .diagnosis .diag-label {{
+    color: var(--cyan); font-size: 0.75rem; letter-spacing: 0.06em;
+    text-transform: uppercase; margin-bottom: 0.35rem;
+  }}
+  .diagnosis ul {{ margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--muted); }}
+  .diagnosis li {{ margin: 0.2rem 0; }}
   .muted {{ color: var(--muted); font-size: 0.9rem; }}
   table {{ width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }}
   th, td {{ text-align: right; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }}
@@ -185,6 +221,7 @@ fn render(r: &RunReport) -> String {
   <div class="sub">{url} · {profile} · {duration}s · {started} · {sent} arrivals</div>
   {knee_banner}
   {slo_banner}
+  {diagnosis_panel}
   <div class="grid">
     <div class="panel">
       <strong>Outcomes</strong>
@@ -294,6 +331,7 @@ fn render(r: &RunReport) -> String {
         sent = r.sent,
         knee_banner = knee_banner,
         slo_banner = slo_banner,
+        diagnosis_panel = diagnosis_panel,
         total = s.total,
         success = s.success,
         failure = s.failure,

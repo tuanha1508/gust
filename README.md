@@ -147,6 +147,30 @@ and fails the check on a regression.
 Walkthrough with real before/after numbers (pool 4 → pool 8 on the demo API):
 [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
 
+### Plain-English diagnosis
+
+Every finished run now includes a written verdict — not just numbers. Gust
+names the failure mode (*latency saturation*, *throughput collapse*, *error
+spike*, *dead target*, or *healthy*) and explains what to do next:
+
+```
+  diagnosis: Throughput collapsed near ≈ 304 req/s — the system could not keep up with arrivals. (throughput collapse)
+    · knee ≈ 304 req/s at t=1.5s — p99 73.7ms (4× service floor) and throughput 34% of target
+    · recommended safe load ≈ 228 req/s (75% of knee)
+    · SLO p99 ≤ 50ms sustains ≈ 304 req/s
+    · peak in-flight ≈ 5165 requests
+
+  Offered load outran completions: throughput flattened while the intended send
+  rate kept climbing. That is classic backpressure — a bounded pool, saturated
+  CPU, or a downstream bottleneck that cannot absorb arrivals.
+```
+
+Re-run the diagnosis from a saved artifact:
+
+```bash
+cargo run --release -p gust -- diagnose ./run.json
+```
+
 The live dashboard shows throughput, in-flight depth, the cumulative raw-vs-corrected
 percentile table, latency over time, and a knee banner when the break is detected.
 Press `q` to stop.
@@ -258,6 +282,10 @@ subtle part, so it is tested without a network (`cargo test -p gust-core`).
 - **Compare / CI (done):** `--json` run artifacts; `gust compare`; `gust report`;
   `--max-p99-ms` / `--max-error-rate` / `--min-success-rate` / `--min-knee-rps`
   / `--require-knee` exit gates. See [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
+- **SLO capacity (done):** `--slo-p99-ms` reports the max load that holds under a
+  p99 budget; flows into compare.
+- **Auto-diagnosis (done):** plain-English cause + narrative on every run;
+  `gust diagnose <run.json>`.
 - **P4 (only if a real need appears):** distributed generators across machines
   with correctly-merged histograms — the one place a coordination layer earns
   its keep.
