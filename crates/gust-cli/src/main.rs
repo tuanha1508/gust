@@ -40,6 +40,16 @@ enum ProfileKind {
     Ramp,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CompareFormat {
+    /// Aligned table for a terminal.
+    Human,
+    /// GitHub-flavored Markdown (paste into a PR comment).
+    Md,
+    /// Machine-readable JSON.
+    Json,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Drive open-model load at a URL or scenario for a fixed duration.
@@ -51,6 +61,9 @@ enum Command {
         baseline: PathBuf,
         /// Candidate / after run.
         candidate: PathBuf,
+        /// Output format: human table, Markdown (PR comment), or JSON.
+        #[arg(long, value_enum, default_value_t = CompareFormat::Human)]
+        format: CompareFormat,
     },
 
     /// Rebuild an HTML report from a saved JSON artifact.
@@ -256,7 +269,8 @@ async fn main() -> Result<()> {
         Command::Compare {
             baseline,
             candidate,
-        } => cmd_compare(&baseline, &candidate),
+            format,
+        } => cmd_compare(&baseline, &candidate, format),
         Command::Report { json, output } => cmd_report(&json, &output),
     }
 }
@@ -285,7 +299,7 @@ fn validate_thresholds(t: &Thresholds) -> Result<()> {
     Ok(())
 }
 
-fn cmd_compare(baseline_path: &Path, candidate_path: &Path) -> Result<()> {
+fn cmd_compare(baseline_path: &Path, candidate_path: &Path, format: CompareFormat) -> Result<()> {
     let baseline = report::load_json(baseline_path)?;
     let candidate = report::load_json(candidate_path)?;
     let base_m = RunMetrics::from_run(
@@ -300,52 +314,56 @@ fn cmd_compare(baseline_path: &Path, candidate_path: &Path) -> Result<()> {
     );
     let result = compare_runs(&base_m, &cand_m);
 
-    println!("gust compare");
-    println!(
-        "  baseline:  {} ({})",
-        baseline_path.display(),
-        baseline.started_at
-    );
-    println!(
-        "  candidate: {} ({})",
-        candidate_path.display(),
-        candidate.started_at
-    );
-    println!();
-    print_metric(&result.p99);
-    print_metric(&result.error_rate);
-    if let Some(k) = &result.knee {
-        print_metric(k);
-    } else {
-        println!("  knee (req/s)          — (missing on one or both runs)");
+    match format {
+        CompareFormat::Human => {
+            println!("gust compare");
+            println!(
+                "  baseline:  {} ({})",
+                baseline_path.display(),
+                baseline.started_at
+            );
+            println!(
+                "  candidate: {} ({})",
+                candidate_path.display(),
+                candidate.started_at
+            );
+            println!();
+            print_metric(&result.p99);
+            print_metric(&result.error_rate);
+            if let Some(k) = &result.knee {
+                print_metric(k);
+            } else {
+                println!("  knee (req/s)          — (missing on one or both runs)");
+            }
+            if let Some(slo) = &result.slo {
+                print_metric(slo);
+            }
+            println!();
+            println!("  verdict: {}", result.verdict.label());
+        }
+        CompareFormat::Md => print!("{}", result.to_markdown()),
+        CompareFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
     }
-    if let Some(slo) = &result.slo {
-        print_metric(slo);
-    }
-    println!();
-    let label = match result.verdict {
-        gust_core::Verdict::Improved => "IMPROVED",
-        gust_core::Verdict::Equivalent => "EQUIVALENT",
-        gust_core::Verdict::Mixed => "MIXED",
-        gust_core::Verdict::Regressed => "REGRESSED",
-    };
-    println!("  verdict: {label}");
 
     if result.verdict.is_failure() {
-        bail!("candidate regressed vs baseline (verdict: {label})");
+        bail!(
+            "candidate regressed vs baseline (verdict: {})",
+            result.verdict.label()
+        );
     }
     Ok(())
 }
 
 fn print_metric(m: &gust_core::MetricChange) {
-    let arrow = match m.direction {
-        gust_core::Direction::Improved => "improved",
-        gust_core::Direction::Regressed => "regressed",
-        gust_core::Direction::Equivalent => "equivalent",
-    };
     println!(
-        "  {:<22} {:>10.3} → {:>10.3}  ({arrow}, Δ {:+.3})",
-        m.name, m.baseline, m.candidate, m.delta
+        "  {:<22} {:>10.3} → {:>10.3}  ({}, Δ {:+.3})",
+        m.name,
+        m.baseline,
+        m.candidate,
+        m.direction.as_str(),
+        m.delta
     );
 }
 

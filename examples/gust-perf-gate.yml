@@ -1,0 +1,77 @@
+# Example: gate a PR on load-test capacity and post the result as a comment.
+#
+# Copy this into `.github/workflows/` in the repo you want to protect. It:
+#   1. builds gust,
+#   2. boots your service (edit the "Start service" step),
+#   3. runs a ramp and saves a JSON artifact,
+#   4. compares against a committed baseline (baselines/gust-baseline.json),
+#   5. posts a Markdown table on the PR and fails the job on regression.
+#
+# Create the baseline once from a known-good run and commit it:
+#   gust run http://127.0.0.1:8080/ --profile ramp --from 100 --to 1200 \
+#     --duration 20 --no-ui --slo-p99-ms 50 --json baselines/gust-baseline.json
+name: perf-gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # needed to post the PR comment
+
+jobs:
+  capacity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Build gust from this repo. If you instead install a released binary,
+      # replace this with a download step and drop the `./target/...` prefix.
+      - name: Build gust
+        run: cargo build --release -p gust
+
+      - name: Start service
+        run: |
+          # EDIT ME: launch the API you want to load test on :8080.
+          node examples/demo-api.js --port 8080 --pool 8 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8080/ >/dev/null && break
+            sleep 0.5
+          done
+
+      - name: Run gust
+        run: |
+          ./target/release/gust run http://127.0.0.1:8080/ \
+            --profile ramp --from 100 --to 1200 --duration 20 --no-ui \
+            --slo-p99-ms 50 \
+            --json candidate.json --report gust-report.html
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gust-report
+          path: gust-report.html
+
+      - name: Compare against baseline (Markdown)
+        id: compare
+        run: |
+          {
+            echo 'md<<GUST_EOF'
+            # `|| true` so we still capture the table on regression; the gate
+            # below re-runs to set the real exit code.
+            ./target/release/gust compare baselines/gust-baseline.json candidate.json --format md || true
+            echo 'GUST_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: gust-perf
+          message: ${{ steps.compare.outputs.md }}
+
+      - name: Fail on regression
+        run: ./target/release/gust compare baselines/gust-baseline.json candidate.json

@@ -39,6 +39,9 @@ Last updated: **2026-08-19**
 - `--json` writes a schema-versioned run artifact (same payload as the HTML embed)
 - `gust compare baseline.json candidate.json` — corrected p99, error rate, knee;
   verdict `IMPROVED` / `EQUIVALENT` / `MIXED` / `REGRESSED` (non-zero on MIXED/REGRESSED)
+- `gust compare --format human|md|json` — Markdown table for PR comments, JSON for tooling
+- `examples/gust-perf-gate.yml` — drop-in GitHub Action: runs a ramp, compares to a
+  committed baseline, posts the Markdown table on the PR, fails the check on regression
 - `gust report <run.json> -o out.html` rebuilds HTML without re-running
 - CI gates on `gust run`: `--max-p99-ms`, `--max-error-rate`, `--min-success-rate`,
   `--min-knee-rps`, `--require-knee`

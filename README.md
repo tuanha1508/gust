@@ -117,9 +117,32 @@ cargo run --release -p gust -- run http://127.0.0.1:8080/ \
 # After you change the system: compare baseline → candidate (exit 1 on regress)
 cargo run --release -p gust -- compare ./baseline.json ./after.json
 
+# Markdown for a PR comment, or JSON for tooling
+cargo run --release -p gust -- compare ./baseline.json ./after.json --format md
+cargo run --release -p gust -- compare ./baseline.json ./after.json --format json
+
 # Rebuild HTML from a saved artifact
 cargo run --release -p gust -- report ./run.json -o ./run.html
 ```
+
+`--format md` renders a table a CI job can drop straight onto the pull request:
+
+```
+### gust compare
+
+**Verdict: ✅ IMPROVED**
+
+| metric | baseline | candidate | Δ | |
+| --- | ---: | ---: | ---: | :--- |
+| corrected p99 (ms) | 4943.871 | 1887.231 | -3056.640 | improved |
+| error rate | 0.496 | 0.000 | -0.496 | improved |
+| knee (req/s) | 411.946 | 808.506 | +396.560 | improved |
+| SLO capacity (req/s) | 427.068 | 839.965 | +412.897 | improved |
+```
+
+Drop [`examples/gust-perf-gate.yml`](examples/gust-perf-gate.yml) into
+`.github/workflows/` to run this on every PR: it posts the table as a comment
+and fails the check on a regression.
 
 Walkthrough with real before/after numbers (pool 4 → pool 8 on the demo API):
 [`docs/CASE-STUDY.md`](docs/CASE-STUDY.md).
