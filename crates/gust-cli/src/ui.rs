@@ -227,7 +227,7 @@ fn draw_knee(f: &mut RFrame, area: ratatui::layout::Rect, snap: &Snapshot) {
             Span::styled("  KNEE ", bold(KNEE)),
             Span::styled(format!("≈ {:.0} req/s", k.target_rps), bold(Color::White)),
             Span::raw(format!(
-                " at t={:.1}s · safe ≈ {:.0} req/s · {}",
+                " at {:.1}s · stay under {:.0} req/s · {}",
                 k.t, k.recommended_rps, k.reason
             )),
         ]),

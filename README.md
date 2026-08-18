@@ -29,7 +29,7 @@
 
 ![Gust HTML report — knee banner](docs/images/report-hero.png)
 
-A ramp against the demo API (200 → 1600 req/s, 30s) lands a knee near **806 req/s** and recommends **~604 req/s** as a safe operating load.
+A ramp against the demo API (200 → 1600 req/s, 30s) breaks near **806 req/s**. Stay under **604 req/s**.
 
 ## Highlights
 
