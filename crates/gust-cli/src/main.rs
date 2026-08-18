@@ -16,9 +16,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gust_core::{
-    Knee, LoadProfile, MultiRecorder, Outcome, RunMetrics, Scenario, ScenarioAuth, ScenarioMode,
-    SloCapacity, Step, StepSummary, Summary, Thresholds, WindowMetric, check_thresholds,
-    compare as compare_runs, detect_knee,
+    Diagnosis, DiagnosisInput, Knee, LoadProfile, MultiRecorder, Outcome, RunMetrics, Scenario,
+    ScenarioAuth, ScenarioMode, SloCapacity, Step, StepSummary, Summary, Thresholds, WindowMetric,
+    check_thresholds, compare as compare_runs, detect_knee, diagnose,
 };
 use reqwest::Method;
 use reqwest::cookie::Jar;
@@ -73,6 +73,12 @@ enum Command {
         /// HTML output path.
         #[arg(short, long)]
         output: PathBuf,
+    },
+
+    /// Print a plain-English diagnosis from a saved JSON artifact.
+    Diagnose {
+        /// JSON produced by `gust run --json`.
+        json: PathBuf,
     },
 }
 
@@ -272,6 +278,7 @@ async fn main() -> Result<()> {
             format,
         } => cmd_compare(&baseline, &candidate, format),
         Command::Report { json, output } => cmd_report(&json, &output),
+        Command::Diagnose { json } => cmd_diagnose(&json),
     }
 }
 
@@ -368,9 +375,33 @@ fn print_metric(m: &gust_core::MetricChange) {
 }
 
 fn cmd_report(json_path: &Path, output: &Path) -> Result<()> {
-    let run = report::load_json(json_path)?;
+    let mut run = report::load_json(json_path)?;
+    if run.diagnosis.is_none() {
+        run.diagnosis = Some(diagnose(DiagnosisInput {
+            summary: &run.summary,
+            windows: &run.windows,
+            knee: run.knee.as_ref(),
+            slo: run.slo.as_ref(),
+            failure_reason: run.failure_reason.as_deref(),
+        }));
+    }
     report::write_html(output, &run)?;
     println!("report: {}", output.display());
+    Ok(())
+}
+
+fn cmd_diagnose(json_path: &Path) -> Result<()> {
+    let run = report::load_json(json_path)?;
+    let diagnosis = run.diagnosis.unwrap_or_else(|| {
+        diagnose(DiagnosisInput {
+            summary: &run.summary,
+            windows: &run.windows,
+            knee: run.knee.as_ref(),
+            slo: run.slo.as_ref(),
+            failure_reason: run.failure_reason.as_deref(),
+        })
+    });
+    print_diagnosis(&diagnosis);
     Ok(())
 }
 
@@ -758,6 +789,16 @@ async fn run(req: RunRequest) -> Result<()> {
         print_summary(sent_n, &summary, &steps, knee.as_ref());
         print_slo(slo.as_ref());
 
+        let failure_reason = first_failure().map(str::to_owned);
+        let diagnosis = diagnose(DiagnosisInput {
+            summary: &summary,
+            windows: &windows,
+            knee: knee.as_ref(),
+            slo: slo.as_ref(),
+            failure_reason: failure_reason.as_deref(),
+        });
+        print_diagnosis(&diagnosis);
+
         let run_report = RunReport {
             schema_version: SCHEMA_VERSION,
             url: info.url.clone(),
@@ -770,7 +811,8 @@ async fn run(req: RunRequest) -> Result<()> {
             windows,
             knee: knee.clone(),
             slo: slo.clone(),
-            failure_reason: first_failure().map(str::to_owned),
+            diagnosis: Some(diagnosis),
+            failure_reason,
         };
 
         if let Some(path) = report_path {
@@ -1260,6 +1302,39 @@ fn print_slo(slo: Option<&SloCapacity>) {
             slo.slo_p99_ms, slo.sustainable_rps
         );
     }
+}
+
+fn print_diagnosis(d: &Diagnosis) {
+    println!();
+    println!("  diagnosis: {} ({})", d.headline, d.cause.label());
+    for e in &d.evidence {
+        println!("    · {e}");
+    }
+    println!();
+    // Wrap narrative lightly for terminal readability.
+    for line in wrap_words(&d.narrative, 78) {
+        println!("  {line}");
+    }
+}
+
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if cur.is_empty() {
+            cur.push_str(word);
+        } else if cur.len() + 1 + word.len() <= width {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
 }
 
 fn truncate(s: &str, max: usize) -> String {

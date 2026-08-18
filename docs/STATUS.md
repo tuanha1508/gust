@@ -59,7 +59,16 @@ Last updated: **2026-08-19**
 - Surfaced in CLI summary, HTML banner, JSON artifact; flows into `gust compare`
   as an `SLO capacity (req/s)` row when both runs used the same budget
 - Dogfood: pool 4 → 8 lifted SLO(p99≤50ms) capacity ~427 → ~840 req/s
-## Verified working
+
+### Plain-English auto-diagnosis
+
+- Every finished run gets a `Diagnosis`: cause enum + headline + evidence bullets
+  + narrative paragraph (latency saturation / throughput collapse / error spike /
+  dead target / healthy / insufficient data)
+- Pure `gust-core::diagnose` over summary + windows + knee + SLO + first failure
+- Surfaced in CLI summary, HTML panel, JSON artifact
+- `gust diagnose <run.json>` re-prints from a saved artifact (also backfills
+  diagnosis when rebuilding HTML via `gust report`)## Verified working
 
 ```bash
 cargo test --workspace                          # 16 tests pass

@@ -128,6 +128,7 @@ Modules:
 - `gust-core/src/steps.rs` — `MultiRecorder` overall + per-step histograms
 - `gust-core/src/compare.rs` — run metrics, compare verdict, CI thresholds
 - `gust-core/src/slo.rs` — SLO-driven capacity over the window series
+- `gust-core/src/diagnosis.rs` — plain-English cause + narrative
 - `gust-cli/src/report.rs` — HTML + JSON artifacts
 
 ### Compare / CI notes

@@ -10,6 +10,7 @@
 //! which requests were *supposed* to be sent.
 
 mod compare;
+mod diagnosis;
 mod knee;
 mod profile;
 mod scenario;
@@ -20,6 +21,7 @@ pub use compare::{
     CompareReport, Direction, MetricChange, RunMetrics, ThresholdViolation, Thresholds, Verdict,
     check_thresholds, compare,
 };
+pub use diagnosis::{Cause, Diagnosis, DiagnosisInput, diagnose};
 pub use knee::{Knee, SAFE_FACTOR, WindowMetric, detect as detect_knee};
 pub use profile::LoadProfile;
 pub use scenario::{Scenario, ScenarioAuth, ScenarioMode, Step};
