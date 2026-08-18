@@ -134,7 +134,8 @@ TUI requires a real interactive terminal (not verified in headless agent shell).
 ## Next tasks
 
 Polish / distribution, in rough value order:
-1. **GitHub Releases** binary (macOS/Linux) so recruiters can try without Rust
+1. ~~**GitHub Releases** binary (macOS/Linux)~~ — `.github/workflows/release.yml`
+   on `v*` tags; `scripts/install.sh` one-liner; MIT + Apache licenses
 2. Short demo GIF/video of the TUI + compare loop
 3. Optional connection-pool wait metrics from reqwest (if exposed)
 4. Steps / hold profile if dogfooding wants it
