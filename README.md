@@ -27,9 +27,17 @@
   <a href="#docs">Docs</a>
 </p>
 
-![Gust HTML report — knee banner](docs/images/report-hero.png)
+![Gust HTML report, knee at 806 req/s](docs/images/report-hero.png)
 
-A ramp against the demo API (200 → 1600 req/s, 30s) lands a knee near **806 req/s** and recommends **~604 req/s** as a safe operating load.
+Ramp 200→1600 req/s for 30s against the demo API. **Broke at 806 req/s** (13.0s). **Stay under 604 req/s**.
+
+![Latency over time, p99 leaving the floor at the knee](docs/images/report-latency.png)
+
+p99 sits on the ~11ms service floor, then leaves it at the dashed line and does not come back.
+
+![Throughput flattening while the target keeps climbing](docs/images/report-throughput.png)
+
+The offered rate keeps rising. Completions do not. That is the same break, from the other side.
 
 ## Highlights
 
@@ -42,7 +50,7 @@ A ramp against the demo API (200 → 1600 req/s, 30s) lands a knee near **806 re
 | **Live TUI + HTML report** | Watch throughput, in-flight depth, and the tail in the terminal; keep a self-contained report. |
 | **Compare / CI** | `gust compare` plus exit gates, so a capacity fix is a table, not a screenshot. |
 
-Versus k6, Vegeta, `oha`, Goose: they are fast. Gust wins on **showing the breaking point** — and proving the fix.
+Versus k6, Vegeta, `oha`, Goose: they are fast. Gust wins on showing the breaking point, then proving the fix.
 
 ## Install
 
@@ -83,23 +91,16 @@ If you built from source and have not installed the binary, prefix commands with
 
 ## Why Gust
 
-Most load testers lie about latency. When a target stalls, a naive tester stops sending and never records the wait those blocked-but-never-sent requests would have seen — so the distribution looks *best* exactly when the system is at its worst. Gil Tene called this **coordinated omission**.
+When a target stalls, most testers stop sending. They never record the wait those blocked requests would have seen, so latency looks best exactly when the system is worst. Gil Tene called this **coordinated omission**.
 
-Gust uses an **open-model scheduler**: it fires on a fixed wall-clock schedule whether earlier requests have come back or not, and it corrects the histogram against the intended send interval. Every run reports **raw vs corrected** side by side.
+Gust fires on a wall-clock schedule whether earlier requests have come back or not, then prints **raw vs corrected** on every run. Same demo mix, real numbers:
 
-Read the p50 row twice:
+| | raw | corrected |
+| --- | ---: | ---: |
+| p50 | 30.46 ms | **184.45 ms** |
+| p99 | 742.91 ms | 689.66 ms |
 
-```
-  latency (ms)      raw     corrected
-  p50              30.46        184.45
-  p99             742.91        689.66
-```
-
-A naive tester reports a **30ms median**. Correction says users actually waited **184ms**. That gap is the product.
-
-![Windowed latency with the knee marked](docs/images/report-latency.png)
-
-On this ramp the knee is the dashed cyan line — p99 leaves the service floor and does not come back. Longer walkthrough with numbers: [`docs/KNEE.md`](docs/KNEE.md).
+A closed-loop tester would ship the 30ms median. The open-model correction is what users queued through. Full walkthrough: [`docs/KNEE.md`](docs/KNEE.md).
 
 ## What you get
 
@@ -126,9 +127,9 @@ It lands in the summary, the HTML banner, and the JSON artifact — so `gust com
 Every finished run names the failure mode (*latency saturation*, *throughput collapse*, *error spike*, *dead target*, or *healthy*) and what to do next:
 
 ```
-  diagnosis: Throughput collapsed near ≈ 304 req/s — the system could not keep up with arrivals.
-    · knee ≈ 304 req/s at t=1.5s — p99 73.7ms (4× service floor) and throughput 34% of target
-    · recommended safe load ≈ 228 req/s (75% of knee)
+  diagnosis: Throughput collapsed near 304 req/s. The system could not keep up with arrivals.
+    · knee at 304 req/s (1.5s). p99 73.7ms (4× service floor) and throughput 34% of target
+    · stay under 228 req/s (75% of knee)
 ```
 
 Re-run it from a saved artifact: `gust diagnose ./run.json`.

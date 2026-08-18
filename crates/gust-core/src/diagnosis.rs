@@ -111,7 +111,7 @@ pub fn diagnose(input: DiagnosisInput<'_>) -> Diagnosis {
         let detail = failure_reason.unwrap_or("every request failed").to_string();
         return Diagnosis {
             cause: Cause::DeadTarget,
-            headline: "No capacity measured — the target never served a request.".into(),
+            headline: "No capacity measured. The target never served a request.".into(),
             evidence: vec![
                 format!("0 / {} successes", summary.total),
                 format!("first failure: {detail}"),
@@ -129,11 +129,11 @@ pub fn diagnose(input: DiagnosisInput<'_>) -> Diagnosis {
 
     if let Some(k) = knee {
         evidence.push(format!(
-            "knee ≈ {:.0} req/s at t={:.1}s — {}",
+            "knee at {:.0} req/s ({:.1}s). {}",
             k.target_rps, k.t, k.reason
         ));
         evidence.push(format!(
-            "recommended safe load ≈ {:.0} req/s (75% of knee)",
+            "stay under {:.0} req/s (75% of knee)",
             k.recommended_rps
         ));
     }
@@ -224,26 +224,28 @@ fn classify(summary: &Summary, windows: &[WindowMetric], knee: Option<&Knee>) ->
 
 fn headline_for(cause: Cause, knee: Option<&Knee>, summary: &Summary) -> String {
     match cause {
-        Cause::DeadTarget => "No capacity measured — the target never served a request.".into(),
+        Cause::DeadTarget => "No capacity measured. The target never served a request.".into(),
         Cause::InsufficientData => "Not enough data to diagnose this run.".into(),
-        Cause::Healthy => "System held under the loads exercised — no clear breaking point.".into(),
+        Cause::Healthy => {
+            "The system held at the loads we ran. No breaking point in this run.".into()
+        }
         Cause::ErrorSpike => match knee {
             Some(k) => format!(
-                "Broke on errors near ≈ {:.0} req/s — the target started failing requests.",
+                "Broke on errors near {:.0} req/s. The target started failing requests.",
                 k.target_rps
             ),
             None => "Error rate spiked under load.".into(),
         },
         Cause::ThroughputCollapse => match knee {
             Some(k) => format!(
-                "Throughput collapsed near ≈ {:.0} req/s — the system could not keep up with arrivals.",
+                "Throughput collapsed near {:.0} req/s. The system could not keep up with arrivals.",
                 k.target_rps
             ),
             None => "Throughput fell behind the offered load.".into(),
         },
         Cause::LatencySaturation => match knee {
             Some(k) => format!(
-                "Latency saturated near ≈ {:.0} req/s — p99 peeled away from the service floor (corrected p99 {:.0}ms).",
+                "Latency saturated near {:.0} req/s. p99 peeled away from the service floor (corrected p99 {:.0}ms).",
                 k.target_rps, summary.corrected.p99_ms
             ),
             None => format!(
@@ -530,7 +532,7 @@ mod tests {
             failure_reason: None,
         });
         assert_eq!(d.cause, Cause::Healthy);
-        assert!(d.headline.contains("no clear breaking point"));
+        assert!(d.headline.contains("No breaking point"));
         assert!(d.evidence.iter().any(|e| e.contains("SLO")));
     }
 

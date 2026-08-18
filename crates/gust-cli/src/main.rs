@@ -1268,13 +1268,10 @@ fn print_summary(sent: u64, s: &Summary, steps: &[StepSummary], knee: Option<&Kn
         println!();
     } else if let Some(k) = knee {
         println!(
-            "  knee:      ≈ {:.0} req/s at t={:.1}s ({})",
+            "  knee:      {:.0} req/s at {:.1}s ({})",
             k.target_rps, k.t, k.reason
         );
-        println!(
-            "  safe load: ≈ {:.0} req/s (75% of knee)",
-            k.recommended_rps
-        );
+        println!("  stay under: {:.0} req/s (75% of knee)", k.recommended_rps);
         println!();
     }
     println!("  'corrected' accounts for coordinated omission — the gap is the");
